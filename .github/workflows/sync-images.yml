@@ -1,4 +1,4 @@
-name: Sync Docker Images
+name: Process and Push Docker Images
 
 on:
   push:
@@ -6,63 +6,53 @@ on:
       - 'upload/images.md'
 
 jobs:
-  sync-images:
+  process-images:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3  # 更新到 v3 版本
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2  # 更新到 v2 版本
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
 
-    - name: Log in to Aliyun Docker registry
-      run: echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login --username ${{ secrets.ALIYUN_USERNAME }} --password-stdin ${{ secrets.ALIYUN_REPOSITORY }}
+      - name: Login to Aliyun Container Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
 
-    - name: Read images from markdown file
-      id: read-images
-      run: |
-        new_images=$(git diff --name-only --diff-filter=A HEAD^ HEAD | grep -E 'upload/images.md' || true)
-        if [[ -z "$new_images" ]]; then
-          echo "No new images found."
-          exit 0
-        fi
-        new_image=$(tail -n 1 upload/images.md)
-        echo "new_image=$new_image" >> $GITHUB_ENV
-
-    - name: Pull Docker image
-      if: env.new_image != ''
-      run: docker pull ${{ env.new_image }}
-
-    - name: Tag Docker image for Aliyun
-      if: env.new_image != ''
-      run: |
-        image_name=$(echo "${{ env.new_image }}" | cut -d':' -f1)
-        image_tag=$(echo "${{ env.new_image }}" | cut -d':' -f2)
-        aliyun_image="${{ secrets.ALIYUN_REPOSITORY }}/$image_name:$image_tag"
-        docker tag ${{ env.new_image }} $aliyun_image
-
-    - name: Push Docker image to Aliyun
-      if: env.new_image != ''
-      run: |
-        image_name=$(echo "${{ env.new_image }}" | cut -d':' -f1)
-        image_tag=$(echo "${{ env.new_image }}" | cut -d':' -f2)
-        aliyun_image="${{ secrets.ALIYUN_REPOSITORY }}/$image_name:$image_tag"
-        docker push $aliyun_image
-
-    - name: Create done file with Aliyun URL
-      if: env.new_image != ''
-      run: |
-        image_name=$(echo "${{ env.new_image }}" | cut -d':' -f1)
-        image_tag=$(echo "${{ env.new_image }}" | cut -d':' -f2)
-        aliyun_image="${{ secrets.ALIYUN_REPOSITORY }}/$image_name:$image_tag"
-        echo "Pushed to $aliyun_image" > done/${{ env.new_image }}.txt
-
-    - name: Commit done file
-      if: env.new_image != ''
-      run: |
-        git config --global user.name 'github-actions[bot]'
-        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git add done/${{ env.new_image }}.txt
-        git commit -m "Added done file for ${{ env.new_image }}"
-        git push
+      - name: Process new images
+        run: |
+          # 读取images.md文件
+          while IFS= read -r image || [[ -n "$image" ]]; do
+            # 检查是否已经处理过这个镜像
+            if [ ! -f "done/${image// /_}.txt" ]; then
+              echo "Processing image: $image"
+              
+              # 拉取镜像
+              docker pull $image
+              
+              # 标记镜像为阿里云仓库
+              aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
+              docker tag $image $aliyun_image
+              
+              # 推送镜像到阿里云
+              docker push $aliyun_image
+              
+              # 创建完成标记文件
+              touch "done/${image// /_}.txt"
+              
+              echo "Processed and pushed: $image"
+            else
+              echo "Image already processed: $image"
+            fi
+          done < upload/images.md
+          
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add done/
+          git commit -m "Add processed image markers" -a || echo "No changes to commit"
+          git push
