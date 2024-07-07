@@ -1,1 +1,1 @@
-savatar101/omniparse:0.1
+savatar101/omniparse
