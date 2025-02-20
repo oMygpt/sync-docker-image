@@ -1,3 +1,3 @@
 krytro/aiaw:latest
-matlab/matlab
+mathworks/matlab
 
