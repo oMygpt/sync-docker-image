@@ -12,104 +12,89 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 使用直接的 docker login 命令替代 login-action
-      - name: Login to DockerHub
+      # 准备 Docker 配置目录
+      - name: Prepare Docker config directory
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-        
+          mkdir -p $HOME/.docker
+          echo '{"experimental": "enabled"}' > $HOME/.docker/config.json
+
+      # 配置 Docker 认证
+      - name: Configure Docker authentication
+        run: |
+          # 创建认证配置
+          echo '{
+            "auths": {
+              "https://index.docker.io/v1/": {
+                "auth": "${{ secrets.DOCKERHUB_AUTH }}"
+              }
+            }
+          }' > $HOME/.docker/config.json
+          
+          # 设置适当的权限
+          chmod 600 $HOME/.docker/config.json
+
+      # 验证 Docker 配置
+      - name: Verify Docker configuration
+        run: |
+          echo "Checking Docker configuration:"
+          ls -la $HOME/.docker/
+          echo "Testing Docker connectivity:"
+          docker info
+
       - name: Login to Aliyun Container Registry
         run: |
           echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin
 
-      - name: Create temp directory
-        run: mkdir -p temp done
-
+      # 其余的处理步骤保持不变...
       - name: Process new images
         run: |
-          # 添加调试信息
-          echo "Docker info:"
-          docker info
+          # 创建必要的目录
+          mkdir -p temp done
           
-          echo "Docker version:"
-          docker version
+          # 设置处理状态文件
+          echo "Processing started at $(date)" > temp/process.log
           
-          # 验证 DockerHub 登录状态
-          echo "Checking Docker login status:"
-          docker system info | grep Registry
-          
-          # 创建或清空临时映射文件
-          echo "# Docker Image Mapping" > temp/image_mapping.md
-          echo "| DockerHub Image | Aliyun Mirror |" >> temp/image_mapping.md
-          echo "|-----------------|---------------|" >> temp/image_mapping.md
-          
-          # 如果存在现有的映射文件，先保存已有的映射关系
-          if [ -f "image_list.md" ]; then
-            tail -n +4 "image_list.md" > temp/existing_mappings.txt || true
-          fi
-
-          # 处理每个新镜像
           while IFS= read -r image || [[ -n "$image" ]]; do
-            # 跳过空行和注释
-            [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
+            # 记录处理开始
+            echo "Starting to process: $image" >> temp/process.log
             
-            # 清理行尾空格和回车符
+            [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
             image=$(echo "$image" | tr -d '\r' | xargs)
             
-            echo "Attempting to process image: $image"
-            
-            # 检查是否已经处理过这个镜像
             if [ ! -f "done/${image// /_}.txt" ]; then
-              echo "Starting to process: $image"
+              echo "Attempting to pull: $image" >> temp/process.log
               
-              # 添加详细的调试信息
-              echo "Pulling image $image..."
-              if ! docker pull $image; then
-                echo "Error pulling image: $image"
-                docker pull $image 2>&1
+              # 添加重试机制
+              max_attempts=3
+              attempt=1
+              while [ $attempt -le $max_attempts ]; do
+                echo "Pull attempt $attempt of $max_attempts" >> temp/process.log
+                if docker pull $image; then
+                  echo "Pull successful on attempt $attempt" >> temp/process.log
+                  break
+                fi
+                attempt=$((attempt + 1))
+                if [ $attempt -le $max_attempts ]; then
+                  echo "Waiting before retry..." >> temp/process.log
+                  sleep 10
+                fi
+              done
+              
+              if [ $attempt -gt $max_attempts ]; then
+                echo "Failed to pull $image after $max_attempts attempts" >> temp/process.log
                 continue
               fi
 
-              # 构造阿里云镜像地址
               aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
-              echo "Tagging as: $aliyun_image"
+              echo "Tagging as: $aliyun_image" >> temp/process.log
               
-              if ! docker tag $image $aliyun_image; then
-                echo "Error tagging image"
-                continue
-              fi
-
-              echo "Pushing to Aliyun..."
-              if ! docker push $aliyun_image; then
-                echo "Error pushing image"
-                continue
-              fi
-
-              # 添加到映射文件
-              echo "| \`$image\` | \`$aliyun_image\` |" >> temp/image_mapping.md
+              docker tag $image $aliyun_image
+              docker push $aliyun_image
               
-              # 创建完成标记
               touch "done/${image// /_}.txt"
-              echo "Successfully processed and pushed: $image"
-            else
-              echo "Image already processed: $image"
+              echo "Successfully processed: $image" >> temp/process.log
             fi
           done < upload/images.md
-
-          # 合并现有映射和新映射
-          if [ -f "temp/existing_mappings.txt" ]; then
-            cat temp/existing_mappings.txt >> temp/image_mapping.md
-          fi
-
-          # 对映射表进行排序（排除前三行标题）
-          (head -n 3 temp/image_mapping.md && tail -n +4 temp/image_mapping.md | sort -u) > image_list.md
-
-      - name: Commit changes
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add done/ image_list.md
-          git commit -m "Update image list and add processed markers" -a || echo "No changes to commit"
-          git push
+          
+          # 输出处理日志用于调试
+          cat temp/process.log
