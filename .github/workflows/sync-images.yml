@@ -12,14 +12,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 设置 Docker 认证环境
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 安装阿里云CLI工具
+      - name: Install Aliyun CLI
+        run: |
+          curl -sSL https://github.com/aliyun/aliyun-cli/releases/download/v3.0.188/aliyun-cli-linux-3.0.188-amd64.tgz | tar -xz
+          sudo mv aliyun /usr/local/bin/
+          aliyun --version
+
+      # 配置阿里云认证信息
+      - name: Configure Aliyun CLI
+        run: |
+          aliyun configure set \
+            --mode AK \
+            --region ${{ secrets.ALIYUN_REGION }} \
+            --access-key-id ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
+            --access-key-secret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+
+      # Docker登录配置
       - name: Setup Docker authentication
         run: |
-          # 创建 Docker 配置目录
           mkdir -p $HOME/.docker
           
-          # 生成有效的 JSON 配置
-          # 使用 printf 确保不会有意外的换行符
           printf '{
             "auths": {
               "https://index.docker.io/v2/": {
@@ -28,97 +44,115 @@ jobs:
             }
           }' "$(echo -n "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" | base64)" > $HOME/.docker/config.json
           
-          # 验证 JSON 格式
-          if ! jq empty $HOME/.docker/config.json; then
-            echo "Invalid JSON format in config file"
-            exit 1
-          fi
-          
-          # 设置正确的文件权限
           chmod 600 $HOME/.docker/config.json
-          
-          # 验证配置文件内容（隐藏敏感信息）
-          echo "Config file structure:"
-          jq 'walk(if type == "string" and length > 8 then "<redacted>" else . end)' $HOME/.docker/config.json
 
-      # 验证 Docker 功能
-      - name: Verify Docker setup
+      - name: Login to DockerHub
         run: |
-          echo "Testing Docker version and info..."
-          docker version
-          docker info
-          
-          echo "Testing registry connectivity..."
-          curl -fsSL https://registry-1.docker.io/v2/ || echo "Basic registry connection failed"
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Process images
+      - name: Login to Aliyun Container Registry
         run: |
-          # 创建进度跟踪目录
+          docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" -p "${{ secrets.ALIYUN_PASSWORD }}"
+
+      - name: Process images and create mapping
+        run: |
           mkdir -p temp done
           
-          echo "=== Starting image processing at $(date) ===" > temp/process.log
+          # 初始化映射文件
+          if [ ! -f "image_list.md" ]; then
+            echo "# Docker Image Mapping" > image_list.md
+            echo "| DockerHub Image | Aliyun Mirror |" >> image_list.md
+            echo "|-----------------|---------------|" >> image_list.md
+          fi
           
-          # 图像处理函数
+          # 创建临时映射文件
+          cp image_list.md temp/new_mapping.md
+          
+          # 处理镜像的函数
           process_docker_image() {
             local image="$1"
+            local namespace="${{ secrets.ALIYUN_NAMESPACE }}"
             local max_retries=3
             local retry_count=0
             
-            echo "Processing image: $image"
+            # 解析镜像名称和标签
+            local image_name=$(echo $image | cut -d':' -f1)
+            local image_tag=$(echo $image | grep ':' > /dev/null && echo $image | cut -d':' -f2 || echo "latest")
+            local repo_name=$(echo $image_name | rev | cut -d'/' -f1 | rev)
+            
+            # 构造阿里云镜像完整路径
+            local aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${namespace}/${repo_name}:${image_tag}"
+            
+            echo "Processing image: $image -> $aliyun_image"
+            
+            # 确保阿里云仓库存在
+            ensure_aliyun_repo() {
+              local repo_name="$1"
+              
+              # 检查仓库是否存在
+              if ! aliyun cr GetRepository \
+                --RepoName=${repo_name} \
+                --RepoNamespace=${namespace} > /dev/null 2>&1; then
+                
+                echo "Creating repository ${repo_name} in namespace ${namespace}"
+                aliyun cr CreateRepository \
+                  --RepoName=${repo_name} \
+                  --RepoNamespace=${namespace} \
+                  --RepoType=PUBLIC \
+                  --Summary="Mirror of ${image_name}"
+              fi
+            }
+            
+            # 确保仓库存在
+            ensure_aliyun_repo "$repo_name"
             
             while [ $retry_count -lt $max_retries ]; do
-              # 尝试拉取镜像
+              echo "Attempt $((retry_count + 1)) of $max_retries"
+              
               if docker pull "$image"; then
-                local aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
-                
-                echo "Successfully pulled $image, tagging as $aliyun_image"
+                echo "Successfully pulled $image"
                 
                 if docker tag "$image" "$aliyun_image" && \
                    docker push "$aliyun_image"; then
-                  echo "Successfully processed $image" >> temp/process.log
+                   
+                  # 添加到映射文件
+                  echo "| \`$image\` | \`$aliyun_image\` |" >> temp/new_mapping.md
+                  
+                  # 标记为已处理
+                  touch "done/${image// /_}.txt"
+                  echo "Successfully processed $image"
                   return 0
                 fi
               fi
               
               retry_count=$((retry_count + 1))
-              if [ $retry_count -lt $max_retries ]; then
-                echo "Retry $retry_count/$max_retries after 5 seconds..."
-                sleep 5
-              fi
+              [ $retry_count -lt $max_retries ] && sleep 5
             done
             
-            echo "Failed to process $image after $max_retries attempts" >> temp/process.log
+            echo "Failed to process $image after $max_retries attempts"
             return 1
           }
           
           # 处理镜像列表
           while IFS= read -r line || [[ -n "$line" ]]; do
-            # 清理输入行
             image=$(echo "$line" | tr -d '\r' | xargs)
-            
-            # 跳过空行和注释
             [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
             
             if [ ! -f "done/${image// /_}.txt" ]; then
-              echo "=== Processing $image at $(date) ===" >> temp/process.log
-              
-              if process_docker_image "$image"; then
-                touch "done/${image// /_}.txt"
-                echo "| \`$image\` | \`${{ secrets.ALIYUN_REGISTRY }}/${image#*/}\` |" >> temp/image_mapping.md
-              fi
-            else
-              echo "Skip already processed image: $image" >> temp/process.log
+              process_docker_image "$image"
             fi
           done < upload/images.md
           
-          # 显示处理日志
-          cat temp/process.log
+          # 对映射表进行排序（保留头部3行）
+          (head -n 3 temp/new_mapping.md; tail -n +4 temp/new_mapping.md | sort -u) > image_list.md
+          
+          echo "Final mapping file content:"
+          cat image_list.md
 
       - name: Commit changes
-        if: success()
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add done/ temp/image_mapping.md || true
-          git commit -m "Update processed images list [skip ci]" || echo "No changes to commit"
+          git add done/ image_list.md
+          git commit -m "Update image mappings and processed markers" || echo "No changes to commit"
           git push || echo "No changes to push"
