@@ -1,2 +1,2 @@
-krytro/aiaw:latest
+krytro/aiaw
 mathworks/matlab
