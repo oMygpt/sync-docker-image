@@ -15,7 +15,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v1
 
-      # 添加 DockerHub 登录步骤
       - name: Login to DockerHub
         uses: docker/login-action@v1
         with:
@@ -29,12 +28,23 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
+      # 创建临时文件来存储镜像映射关系
+      - name: Create temp directory
+        run: mkdir -p temp done
+
       - name: Process new images
         run: |
-          # 确保 done 目录存在
-          mkdir -p done
+          # 创建或清空临时映射文件
+          echo "# Docker Image Mapping" > temp/image_mapping.md
+          echo "| DockerHub Image | Aliyun Mirror |" >> temp/image_mapping.md
+          echo "|-----------------|---------------|" >> temp/image_mapping.md
+          
+          # 如果存在现有的映射文件，先保存已有的映射关系
+          if [ -f "image_list.md" ]; then
+            tail -n +4 "image_list.md" > temp/existing_mappings.txt || true
+          fi
 
-          # 读取 images.md 文件并处理每个镜像
+          # 处理每个新镜像
           while IFS= read -r image || [[ -n "$image" ]]; do
             # 跳过空行和注释
             [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
@@ -46,26 +56,31 @@ jobs:
             if [ ! -f "done/${image// /_}.txt" ]; then
               echo "Processing image: $image"
               
-              # 添加错误处理
+              # 拉取镜像
               if ! docker pull $image; then
                 echo "Failed to pull image: $image"
                 continue
               fi
 
-              # 标记镜像为阿里云仓库
+              # 构造阿里云镜像地址
               aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
+              
+              # 标记镜像
               if ! docker tag $image $aliyun_image; then
                 echo "Failed to tag image: $image"
                 continue
               fi
 
-              # 推送镜像到阿里云
+              # 推送镜像
               if ! docker push $aliyun_image; then
                 echo "Failed to push image: $aliyun_image"
                 continue
               fi
 
-              # 创建完成标记文件
+              # 添加到映射文件
+              echo "| \`$image\` | \`$aliyun_image\` |" >> temp/image_mapping.md
+              
+              # 创建完成标记
               touch "done/${image// /_}.txt"
               echo "Successfully processed and pushed: $image"
             else
@@ -73,10 +88,18 @@ jobs:
             fi
           done < upload/images.md
 
+          # 合并现有映射和新映射
+          if [ -f "temp/existing_mappings.txt" ]; then
+            cat temp/existing_mappings.txt >> temp/image_mapping.md
+          fi
+
+          # 对映射表进行排序（排除前三行标题）
+          (head -n 3 temp/image_mapping.md && tail -n +4 temp/image_mapping.md | sort -u) > image_list.md
+
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add done/
-          git commit -m "Add processed image markers" -a || echo "No changes to commit"
+          git add done/ image_list.md
+          git commit -m "Update image list and add processed markers" -a || echo "No changes to commit"
           git push
