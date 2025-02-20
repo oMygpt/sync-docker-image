@@ -15,6 +15,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v1
 
+      # 添加 DockerHub 登录步骤
+      - name: Login to DockerHub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Login to Aliyun Container Registry
         uses: docker/login-action@v1
         with:
@@ -24,31 +31,48 @@ jobs:
 
       - name: Process new images
         run: |
-          # 读取images.md文件
+          # 确保 done 目录存在
+          mkdir -p done
+
+          # 读取 images.md 文件并处理每个镜像
           while IFS= read -r image || [[ -n "$image" ]]; do
+            # 跳过空行和注释
+            [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
+            
+            # 清理行尾空格和回车符
+            image=$(echo "$image" | tr -d '\r' | xargs)
+            
             # 检查是否已经处理过这个镜像
             if [ ! -f "done/${image// /_}.txt" ]; then
               echo "Processing image: $image"
               
-              # 拉取镜像
-              docker pull $image
-              
+              # 添加错误处理
+              if ! docker pull $image; then
+                echo "Failed to pull image: $image"
+                continue
+              fi
+
               # 标记镜像为阿里云仓库
               aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
-              docker tag $image $aliyun_image
-              
+              if ! docker tag $image $aliyun_image; then
+                echo "Failed to tag image: $image"
+                continue
+              fi
+
               # 推送镜像到阿里云
-              docker push $aliyun_image
-              
+              if ! docker push $aliyun_image; then
+                echo "Failed to push image: $aliyun_image"
+                continue
+              fi
+
               # 创建完成标记文件
               touch "done/${image// /_}.txt"
-              
-              echo "Processed and pushed: $image"
+              echo "Successfully processed and pushed: $image"
             else
               echo "Image already processed: $image"
             fi
           done < upload/images.md
-          
+
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
