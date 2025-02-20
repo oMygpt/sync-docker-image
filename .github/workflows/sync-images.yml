@@ -45,12 +45,6 @@ jobs:
           
           # 登录到阿里云容器服务
           echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin
-          
-          # 验证阿里云登录状态
-          if ! docker info | grep -q "${{ secrets.ALIYUN_REGISTRY }}"; then
-            echo "Aliyun authentication failed"
-            exit 1
-          fi
 
       - name: Process images and create mapping
         run: |
@@ -103,13 +97,6 @@ jobs:
             
             # 确保仓库存在
             ensure_aliyun_repo "$repo_name"
-            
-            # 添加验证登录状态的检查
-            echo "Verifying Docker login status before processing..."
-            if ! docker info | grep -q "Username: ${{ secrets.DOCKERHUB_USERNAME }}"; then
-              echo "DockerHub authentication lost, attempting to re-authenticate..."
-              echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-            fi
             
             while [ $retry_count -lt $max_retries ]; do
               echo "Attempt $((retry_count + 1)) of $max_retries"
