@@ -12,129 +12,113 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 安装必要的工具
-      - name: Install dependencies
+      # 设置 Docker 认证环境
+      - name: Setup Docker authentication
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
-
-      # 获取 Docker Hub Token
-      - name: Get Docker Hub Token
-        id: docker_token
-        run: |
-          # 使用 Docker Hub API 获取认证令牌
-          TOKEN=$(curl -s -H "Content-Type: application/json" \
-            -X POST \
-            -d "{\"username\": \"${{ secrets.DOCKERHUB_USERNAME }}\", \"password\": \"${{ secrets.DOCKERHUB_TOKEN }}\"}" \
-            https://hub.docker.com/v2/users/login/ | jq -r .token)
+          # 创建 Docker 配置目录
+          mkdir -p $HOME/.docker
           
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "Failed to get Docker Hub token"
+          # 生成有效的 JSON 配置
+          # 使用 printf 确保不会有意外的换行符
+          printf '{
+            "auths": {
+              "https://index.docker.io/v2/": {
+                "auth": "%s"
+              }
+            }
+          }' "$(echo -n "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" | base64)" > $HOME/.docker/config.json
+          
+          # 验证 JSON 格式
+          if ! jq empty $HOME/.docker/config.json; then
+            echo "Invalid JSON format in config file"
             exit 1
           fi
           
-          # 将令牌保存到环境变量
-          echo "DOCKER_TOKEN=$TOKEN" >> $GITHUB_ENV
-          echo "Token acquired successfully"
-
-      # 设置 Docker 配置
-      - name: Configure Docker
-        run: |
-          echo "Setting up Docker configuration..."
-          mkdir -p $HOME/.docker
-          echo "{\"auths\":{\"https://index.docker.io/v2/\":{\"auth\":\"$(echo -n "${{ secrets.DOCKERHUB_USERNAME }}:${{ env.DOCKER_TOKEN }}" | base64)\"}}}" > $HOME/.docker/config.json
+          # 设置正确的文件权限
           chmod 600 $HOME/.docker/config.json
+          
+          # 验证配置文件内容（隐藏敏感信息）
+          echo "Config file structure:"
+          jq 'walk(if type == "string" and length > 8 then "<redacted>" else . end)' $HOME/.docker/config.json
 
-      # 登录到阿里云容器仓库
-      - name: Login to Aliyun Container Registry
+      # 验证 Docker 功能
+      - name: Verify Docker setup
         run: |
-          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin
+          echo "Testing Docker version and info..."
+          docker version
+          docker info
+          
+          echo "Testing registry connectivity..."
+          curl -fsSL https://registry-1.docker.io/v2/ || echo "Basic registry connection failed"
 
-      - name: Process new images
+      - name: Process images
         run: |
-          # 创建必要的目录
+          # 创建进度跟踪目录
           mkdir -p temp done
           
-          # 初始化日志文件
-          echo "# Processing Log - $(date)" > temp/process.log
+          echo "=== Starting image processing at $(date) ===" > temp/process.log
           
-          process_image() {
+          # 图像处理函数
+          process_docker_image() {
             local image="$1"
-            local repository="${image%:*}"
-            local tag="${image#*:}"
+            local max_retries=3
+            local retry_count=0
             
-            echo "Processing image: $image" >> temp/process.log
+            echo "Processing image: $image"
             
-            # 使用 Docker Registry API 检查镜像
-            AUTH_HEADER="Authorization: Bearer ${{ env.DOCKER_TOKEN }}"
-            MANIFEST_URL="https://registry-1.docker.io/v2/${repository#*/}/manifests/${tag}"
-            
-            echo "Checking manifest at: $MANIFEST_URL" >> temp/process.log
-            
-            # 获取镜像清单
-            MANIFEST=$(curl -sL -H "$AUTH_HEADER" \
-              -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-              "$MANIFEST_URL")
-            
-            if [ -z "$MANIFEST" ]; then
-              echo "Failed to get manifest for $image" >> temp/process.log
-              return 1
-            fi
-            
-            # 使用标准的 Docker 命令拉取镜像
-            if docker pull $image; then
-              local aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
-              echo "Tagging as: $aliyun_image" >> temp/process.log
-              
-              if docker tag $image $aliyun_image && \
-                 docker push $aliyun_image; then
-                touch "done/${image// /_}.txt"
-                echo "Successfully processed: $image" >> temp/process.log
-                return 0
+            while [ $retry_count -lt $max_retries ]; do
+              # 尝试拉取镜像
+              if docker pull "$image"; then
+                local aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${image#*/}"
+                
+                echo "Successfully pulled $image, tagging as $aliyun_image"
+                
+                if docker tag "$image" "$aliyun_image" && \
+                   docker push "$aliyun_image"; then
+                  echo "Successfully processed $image" >> temp/process.log
+                  return 0
+                fi
               fi
-            fi
+              
+              retry_count=$((retry_count + 1))
+              if [ $retry_count -lt $max_retries ]; then
+                echo "Retry $retry_count/$max_retries after 5 seconds..."
+                sleep 5
+              fi
+            done
             
-            echo "Failed to process: $image" >> temp/process.log
+            echo "Failed to process $image after $max_retries attempts" >> temp/process.log
             return 1
           }
           
-          # 读取并处理镜像列表
-          while IFS= read -r image || [[ -n "$image" ]]; do
+          # 处理镜像列表
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            # 清理输入行
+            image=$(echo "$line" | tr -d '\r' | xargs)
+            
             # 跳过空行和注释
             [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
             
-            # 清理输入
-            image=$(echo "$image" | tr -d '\r' | xargs)
-            
             if [ ! -f "done/${image// /_}.txt" ]; then
-              if process_image "$image"; then
+              echo "=== Processing $image at $(date) ===" >> temp/process.log
+              
+              if process_docker_image "$image"; then
+                touch "done/${image// /_}.txt"
                 echo "| \`$image\` | \`${{ secrets.ALIYUN_REGISTRY }}/${image#*/}\` |" >> temp/image_mapping.md
               fi
             else
-              echo "Image already processed: $image" >> temp/process.log
+              echo "Skip already processed image: $image" >> temp/process.log
             fi
           done < upload/images.md
           
-          # 创建或更新映射文件
-          if [ ! -f "image_list.md" ]; then
-            echo "# Docker Image Mapping" > image_list.md
-            echo "| DockerHub Image | Aliyun Mirror |" >> image_list.md
-            echo "|-----------------|---------------|" >> image_list.md
-          fi
-          
-          # 合并已有映射和新映射
-          if [ -f "temp/image_mapping.md" ]; then
-            cat temp/image_mapping.md >> image_list.md
-            sort -u -o image_list.md image_list.md
-          fi
-          
-          # 输出处理日志
+          # 显示处理日志
           cat temp/process.log
 
       - name: Commit changes
+        if: success()
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add done/ image_list.md
-          git commit -m "Update image list and add processed markers" -a || echo "No changes to commit"
-          git push
+          git add done/ temp/image_mapping.md || true
+          git commit -m "Update processed images list [skip ci]" || echo "No changes to commit"
+          git push || echo "No changes to push"
