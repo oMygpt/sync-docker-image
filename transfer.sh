@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 自动化拉取、打标签并推送 Docker 镜像脚本
+# 自动化拉取、打标签并推送 Docker 镜像脚本，并记录迁移历史
 
 # 设置颜色变量，用于输出提示信息
 RED='\033[0;31m'
@@ -97,14 +97,34 @@ push_dest_image() {
     fi
 }
 
+# 记录 transfer 历史到 transfer_history.md
+record_transfer_history() {
+    local history_file="transfer_history.md"
+    local current_time=$(date +"%Y-%m-%d %H:%M:%S")
+
+    # 如果文件不存在，创建文件并写入表头
+    if [ ! -f "$history_file" ]; then
+        echo "| 源镜像 | 目标镜像 | 运行时间 |" > "$history_file"
+        echo "|---|---|---|" >> "$history_file"
+    fi
+
+    # 追加记录行
+    echo "| ${source_image} | ${dest_image} | ${current_time} |" >> "$history_file"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}记录 transfer 历史失败！请检查文件写入权限。${NC}"
+    else
+        echo -e "${GREEN}transfer 历史记录成功！${NC}"
+    fi
+}
+
 # 主函数
 main() {
-    echo -e "${YELLOW}开始执行镜像迁移：${source_image} -> ${dest_image}${NC}"
     parse_args "$@"
     pull_source_image
     get_source_image_id
     tag_image
     push_dest_image
+    record_transfer_history  # 在推送成功后记录历史
 }
 
 # 执行主函数
