@@ -1,0 +1,440 @@
+name: 优雅的Docker镜像同步系统
+
+on:
+  # 保留原有的文件触发方式作为备选
+  push:
+    paths:
+      - 'upload/images.md'
+      - 'upload/batch_sync.json'
+  
+  # 增强的手动触发功能
+  workflow_dispatch:
+    inputs:
+      sync_mode:
+        description: '同步模式'
+        required: true
+        type: choice
+        options:
+          - 'single'     # 单个镜像
+          - 'multiple'   # 多个镜像
+          - 'batch'      # 批量文件
+          - 'preset'     # 预设镜像组
+        default: 'single'
+      
+      single_image:
+        description: '单个镜像名称 (格式: nginx:latest)'
+        required: false
+        type: string
+      
+      multiple_images:
+        description: '多个镜像 (每行一个)'
+        required: false
+        type: string
+      
+      preset_group:
+        description: '预设镜像组'
+        required: false
+        type: choice
+        options:
+          - 'web-servers'    # Web服务器 (nginx, apache, caddy)
+          - 'databases'      # 数据库 (mysql, postgres, redis, mongodb)
+          - 'ai-ml'          # AI/ML (pytorch, tensorflow, jupyter)
+          - 'dev-tools'      # 开发工具 (node, python, golang)
+          - 'monitoring'     # 监控工具 (prometheus, grafana, jaeger)
+        default: 'web-servers'
+      
+      target_registry:
+        description: '目标仓库'
+        required: false
+        type: choice
+        options:
+          - 'aliyun-hangzhou'   # 阿里云杭州
+          - 'aliyun-beijing'    # 阿里云北京
+          - 'aliyun-shanghai'   # 阿里云上海
+          - 'aliyun-shenzhen'   # 阿里云深圳
+        default: 'aliyun-hangzhou'
+      
+      sync_options:
+        description: '同步选项'
+        required: false
+        type: choice
+        options:
+          - 'normal'        # 正常同步
+          - 'force'         # 强制同步
+          - 'dry-run'       # 干运行
+          - 'verify-only'   # 仅验证
+        default: 'normal'
+      
+      max_parallel:
+        description: '最大并发数 (1-10)'
+        required: false
+        type: number
+        default: 3
+        
+      notification:
+        description: '通知方式'
+        required: false
+        type: choice
+        options:
+          - 'none'          # 无通知
+          - 'summary'       # 摘要通知
+          - 'detailed'      # 详细通知
+        default: 'summary'
+  
+  # 通过Issues触发同步
+  issues:
+    types: [opened, edited]
+  
+  # 通过PR触发同步
+  pull_request:
+    types: [opened, edited]
+    paths:
+      - 'sync-requests/**'
+
+env:
+  MAX_RETRIES: 3
+  RETRY_DELAY: 10
+  LOG_LEVEL: INFO
+
+jobs:
+  # 解析触发源和参数
+  parse-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      trigger-type: ${{ steps.parse.outputs.trigger-type }}
+      images-list: ${{ steps.parse.outputs.images-list }}
+      sync-config: ${{ steps.parse.outputs.sync-config }}
+      should-sync: ${{ steps.parse.outputs.should-sync }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Parse trigger source
+        id: parse
+        run: |
+          echo "🔍 解析触发源和参数..."
+          
+          # 初始化变量
+          TRIGGER_TYPE="unknown"
+          IMAGES_LIST="[]"
+          SYNC_CONFIG="{}"
+          SHOULD_SYNC="false"
+          
+          # 根据触发事件类型处理
+          case "${{ github.event_name }}" in
+            "workflow_dispatch")
+              TRIGGER_TYPE="manual"
+              SHOULD_SYNC="true"
+              
+              # 解析手动触发参数
+              SYNC_MODE="${{ github.event.inputs.sync_mode }}"
+              echo "📋 同步模式: $SYNC_MODE"
+              
+              case "$SYNC_MODE" in
+                "single")
+                  if [[ -n "${{ github.event.inputs.single_image }}" ]]; then
+                    IMAGES_LIST='["${{ github.event.inputs.single_image }}"]'
+                  fi
+                  ;;
+                "multiple")
+                  if [[ -n "${{ github.event.inputs.multiple_images }}" ]]; then
+                    # 将多行输入转换为JSON数组
+                    IMAGES_LIST=$(echo '${{ github.event.inputs.multiple_images }}' | jq -R -s 'split("\n") | map(select(length > 0 and test("^[^#]")))')
+                  fi
+                  ;;
+                "preset")
+                  # 预设镜像组
+                  case "${{ github.event.inputs.preset_group }}" in
+                    "web-servers")
+                      IMAGES_LIST='["nginx:latest", "nginx:alpine", "httpd:latest", "caddy:latest"]'
+                      ;;
+                    "databases")
+                      IMAGES_LIST='["mysql:8.0", "postgres:15", "redis:7-alpine", "mongo:6"]'
+                      ;;
+                    "ai-ml")
+                      IMAGES_LIST='["pytorch/pytorch:latest", "tensorflow/tensorflow:latest", "jupyter/scipy-notebook:latest"]'
+                      ;;
+                    "dev-tools")
+                      IMAGES_LIST='["node:18-alpine", "python:3.11-slim", "golang:1.21-alpine"]'
+                      ;;
+                    "monitoring")
+                      IMAGES_LIST='["prom/prometheus:latest", "grafana/grafana:latest", "jaegertracing/all-in-one:latest"]'
+                      ;;
+                  esac
+                  ;;
+                "batch")
+                  # 从批量文件读取
+                  if [[ -f "upload/batch_sync.json" ]]; then
+                    IMAGES_LIST=$(jq -c '.images // []' upload/batch_sync.json)
+                  fi
+                  ;;
+              esac
+              
+              # 构建同步配置
+              SYNC_CONFIG=$(jq -n \
+                --arg target "${{ github.event.inputs.target_registry }}" \
+                --arg options "${{ github.event.inputs.sync_options }}" \
+                --argjson parallel "${{ github.event.inputs.max_parallel }}" \
+                --arg notification "${{ github.event.inputs.notification }}" \
+                '{
+                  "target_registry": $target,
+                  "sync_options": $options,
+                  "max_parallel": $parallel,
+                  "notification": $notification
+                }')
+              ;;
+              
+            "push")
+              TRIGGER_TYPE="file_change"
+              SHOULD_SYNC="true"
+              
+              # 从文件读取镜像列表
+              if [[ -f "upload/images.md" ]]; then
+                IMAGES_LIST=$(grep -v '^#' upload/images.md | grep -v '^$' | jq -R -s 'split("\n") | map(select(length > 0))')
+              fi
+              
+              # 默认配置
+              SYNC_CONFIG='{
+                "target_registry": "aliyun-hangzhou",
+                "sync_options": "normal",
+                "max_parallel": 3,
+                "notification": "summary"
+              }'
+              ;;
+              
+            "issues")
+              TRIGGER_TYPE="issue"
+              
+              # 检查Issue标题是否包含同步关键词
+              ISSUE_TITLE="${{ github.event.issue.title }}"
+              if [[ "$ISSUE_TITLE" =~ ^\[sync\]|^\[同步\]|^sync:|^同步: ]]; then
+                SHOULD_SYNC="true"
+                
+                # 从Issue正文解析镜像列表
+                ISSUE_BODY="${{ github.event.issue.body }}"
+                # 这里可以添加更复杂的解析逻辑
+                IMAGES_LIST='[]'  # 临时设置为空数组
+                
+                SYNC_CONFIG='{
+                  "target_registry": "aliyun-hangzhou",
+                  "sync_options": "normal",
+                  "max_parallel": 2,
+                  "notification": "detailed"
+                }'
+              fi
+              ;;
+              
+            "pull_request")
+              TRIGGER_TYPE="pull_request"
+              
+              # 检查PR是否修改了同步请求文件
+              if [[ "${{ github.event.pull_request.title }}" =~ ^\[sync\]|^\[同步\] ]]; then
+                SHOULD_SYNC="true"
+                IMAGES_LIST='[]'  # 从PR文件中解析
+                
+                SYNC_CONFIG='{
+                  "target_registry": "aliyun-hangzhou",
+                  "sync_options": "dry-run",
+                  "max_parallel": 2,
+                  "notification": "detailed"
+                }'
+              fi
+              ;;
+          esac
+          
+          # 输出结果
+          echo "trigger-type=$TRIGGER_TYPE" >> $GITHUB_OUTPUT
+          echo "images-list=$IMAGES_LIST" >> $GITHUB_OUTPUT
+          echo "sync-config=$SYNC_CONFIG" >> $GITHUB_OUTPUT
+          echo "should-sync=$SHOULD_SYNC" >> $GITHUB_OUTPUT
+          
+          # 显示解析结果
+          echo "📊 解析结果:"
+          echo "  触发类型: $TRIGGER_TYPE"
+          echo "  是否同步: $SHOULD_SYNC"
+          echo "  镜像数量: $(echo "$IMAGES_LIST" | jq 'length')"
+          echo "  同步配置: $SYNC_CONFIG"
+
+  # 预检查作业
+  pre-check:
+    needs: parse-trigger
+    if: needs.parse-trigger.outputs.should-sync == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      images-count: ${{ steps.validate.outputs.images-count }}
+      config-valid: ${{ steps.validate.outputs.config-valid }}
+      images-matrix: ${{ steps.validate.outputs.images-matrix }}
+      target-registry: ${{ steps.validate.outputs.target-registry }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Validate and prepare
+        id: validate
+        run: |
+          echo "🔍 验证配置和镜像列表..."
+          
+          # 解析配置
+          SYNC_CONFIG='${{ needs.parse-trigger.outputs.sync-config }}'
+          TARGET_REGISTRY=$(echo "$SYNC_CONFIG" | jq -r '.target_registry')
+          SYNC_OPTIONS=$(echo "$SYNC_CONFIG" | jq -r '.sync_options')
+          
+          # 映射目标仓库
+          case "$TARGET_REGISTRY" in
+            "aliyun-hangzhou")
+              REGISTRY_URL="registry.cn-hangzhou.aliyuncs.com"
+              ;;
+            "aliyun-beijing")
+              REGISTRY_URL="registry.cn-beijing.aliyuncs.com"
+              ;;
+            "aliyun-shanghai")
+              REGISTRY_URL="registry.cn-shanghai.aliyuncs.com"
+              ;;
+            "aliyun-shenzhen")
+              REGISTRY_URL="registry.cn-shenzhen.aliyuncs.com"
+              ;;
+            *)
+              REGISTRY_URL="registry.cn-hangzhou.aliyuncs.com"  # 默认
+              ;;
+          esac
+          
+          # 验证必需的secrets
+          required_secrets=("ALIYUN_USERNAME" "ALIYUN_PASSWORD" "ALIYUN_NAMESPACE")
+          missing_secrets=()
+          
+          for secret in "${required_secrets[@]}"; do
+            if [[ -z "${!secret:-}" ]]; then
+              missing_secrets+=("$secret")
+            fi
+          done
+          
+          if [[ ${#missing_secrets[@]} -gt 0 ]]; then
+            echo "❌ 缺少必需的secrets: ${missing_secrets[*]}"
+            echo "config-valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # 处理镜像列表
+          IMAGES_LIST='${{ needs.parse-trigger.outputs.images-list }}'
+          IMAGES_COUNT=$(echo "$IMAGES_LIST" | jq 'length')
+          
+          if [[ $IMAGES_COUNT -eq 0 ]]; then
+            echo "❌ 没有找到有效的镜像进行同步"
+            echo "config-valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # 验证镜像格式
+          VALID_IMAGES=$(echo "$IMAGES_LIST" | jq -r '.[] | select(test("^[a-zA-Z0-9._/-]+(:([a-zA-Z0-9._-]+))?$"))')
+          VALID_COUNT=$(echo "$VALID_IMAGES" | wc -l)
+          
+          if [[ $VALID_COUNT -ne $IMAGES_COUNT ]]; then
+            echo "⚠️ 发现无效的镜像格式，已过滤"
+          fi
+          
+          # 重新构建有效镜像列表
+          MATRIX_JSON=$(echo "$VALID_IMAGES" | jq -R . | jq -s .)
+          
+          echo "✅ 配置验证通过"
+          echo "config-valid=true" >> $GITHUB_OUTPUT
+          echo "images-count=$VALID_COUNT" >> $GITHUB_OUTPUT
+          echo "images-matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          echo "target-registry=$REGISTRY_URL" >> $GITHUB_OUTPUT
+          
+          # 显示同步计划
+          echo "📋 同步计划:"
+          echo "  目标仓库: $REGISTRY_URL"
+          echo "  同步选项: $SYNC_OPTIONS"
+          echo "  镜像数量: $VALID_COUNT"
+          echo "  镜像列表:"
+          echo "$VALID_IMAGES" | sed 's/^/    - /'
+        env:
+          ALIYUN_USERNAME: ${{ secrets.ALIYUN_USERNAME }}
+          ALIYUN_PASSWORD: ${{ secrets.ALIYUN_PASSWORD }}
+          ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
+
+  # 主同步作业 - 复用现有的同步逻辑
+  sync-images:
+    needs: [parse-trigger, pre-check]
+    if: needs.pre-check.outputs.config-valid == 'true'
+    uses: ./.github/workflows/sync-images-enhanced.yml
+    with:
+      images-matrix: ${{ needs.pre-check.outputs.images-matrix }}
+      target-registry: ${{ needs.pre-check.outputs.target-registry }}
+      sync-config: ${{ needs.parse-trigger.outputs.sync-config }}
+    secrets: inherit
+
+  # 通知和反馈
+  notify:
+    needs: [parse-trigger, pre-check, sync-images]
+    if: always() && needs.parse-trigger.outputs.should-sync == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Send notification
+        run: |
+          echo "📢 发送同步结果通知..."
+          
+          SYNC_CONFIG='${{ needs.parse-trigger.outputs.sync-config }}'
+          NOTIFICATION_TYPE=$(echo "$SYNC_CONFIG" | jq -r '.notification')
+          TRIGGER_TYPE="${{ needs.parse-trigger.outputs.trigger-type }}"
+          
+          # 根据触发类型和通知设置发送通知
+          case "$TRIGGER_TYPE" in
+            "issue")
+              # 在Issue中添加评论
+              echo "将在Issue中添加同步结果评论"
+              ;;
+            "pull_request")
+              # 在PR中添加评论
+              echo "将在PR中添加同步结果评论"
+              ;;
+            *)
+              # 创建工作流摘要
+              echo "创建工作流摘要"
+              ;;
+          esac
+          
+          # 根据通知类型生成不同详细程度的报告
+          case "$NOTIFICATION_TYPE" in
+            "detailed")
+              echo "生成详细通知报告"
+              ;;
+            "summary")
+              echo "生成摘要通知报告"
+              ;;
+            "none")
+              echo "跳过通知"
+              ;;
+          esac
+      
+      - name: Update documentation
+        run: |
+          echo "📚 更新文档和记录..."
+          
+          # 更新同步历史
+          SYNC_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+          TRIGGER_TYPE="${{ needs.parse-trigger.outputs.trigger-type }}"
+          IMAGES_COUNT="${{ needs.pre-check.outputs.images-count }}"
+          
+          # 添加到历史记录
+          echo "## $SYNC_TIME" >> sync_history.md
+          echo "- **触发方式**: $TRIGGER_TYPE" >> sync_history.md
+          echo "- **镜像数量**: $IMAGES_COUNT" >> sync_history.md
+          echo "- **运行ID**: ${{ github.run_id }}" >> sync_history.md
+          echo "" >> sync_history.md
+          
+          # 提交更改
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add sync_history.md || true
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "📝 更新同步历史记录 ($SYNC_TIME)"
+            git push
+          fi

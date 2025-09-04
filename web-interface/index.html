@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker镜像同步控制台</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2196F3 0%, #21CBF3 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .main-content {
+            padding: 40px;
+        }
+        
+        .sync-modes {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+        
+        .mode-card {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .mode-card:hover {
+            border-color: #2196F3;
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(33, 150, 243, 0.15);
+        }
+        
+        .mode-card.active {
+            border-color: #2196F3;
+            background: #e3f2fd;
+        }
+        
+        .mode-icon {
+            font-size: 2.5em;
+            margin-bottom: 15px;
+            display: block;
+        }
+        
+        .mode-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        
+        .mode-desc {
+            color: #666;
+            line-height: 1.5;
+        }
+        
+        .form-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            display: none;
+        }
+        
+        .form-section.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .form-input, .form-select, .form-textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            outline: none;
+            border-color: #2196F3;
+        }
+        
+        .form-textarea {
+            resize: vertical;
+            min-height: 120px;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }
+        
+        .preset-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .preset-btn {
+            padding: 10px 15px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            font-size: 13px;
+        }
+        
+        .preset-btn:hover {
+            border-color: #2196F3;
+            background: #e3f2fd;
+        }
+        
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        
+        .sync-button {
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-top: 20px;
+        }
+        
+        .sync-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(76, 175, 80, 0.3);
+        }
+        
+        .sync-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .status-panel {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+            display: none;
+        }
+        
+        .status-panel.active {
+            display: block;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .status-item:last-child {
+            border-bottom: none;
+        }
+        
+        .status-icon {
+            margin-right: 15px;
+            font-size: 1.2em;
+        }
+        
+        .status-success { color: #4CAF50; }
+        .status-error { color: #f44336; }
+        .status-warning { color: #ff9800; }
+        .status-info { color: #2196F3; }
+        
+        .github-link {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        
+        .github-link:hover {
+            background: rgba(0,0,0,0.9);
+            transform: scale(1.05);
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+            
+            .sync-modes {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .options-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <a href="https://github.com/oMygpt/sync-docker-image" class="github-link" target="_blank">
+        🐙 GitHub Repository
+    </a>
+    
+    <div class="container">
+        <div class="header">
+            <h1>🐳 Docker镜像同步控制台</h1>
+            <p>优雅的Docker镜像同步管理界面</p>
+        </div>
+        
+        <div class="main-content">
+            <!-- 同步模式选择 -->
+            <div class="sync-modes">
+                <div class="mode-card" data-mode="single">
+                    <span class="mode-icon">🎯</span>
+                    <div class="mode-title">单个镜像</div>
+                    <div class="mode-desc">同步单个Docker镜像到阿里云仓库</div>
+                </div>
+                
+                <div class="mode-card" data-mode="multiple">
+                    <span class="mode-icon">📋</span>
+                    <div class="mode-title">多个镜像</div>
+                    <div class="mode-desc">批量同步多个Docker镜像</div>
+                </div>
+                
+                <div class="mode-card" data-mode="preset">
+                    <span class="mode-icon">⚡</span>
+                    <div class="mode-title">预设组合</div>
+                    <div class="mode-desc">使用预定义的镜像组合快速同步</div>
+                </div>
+            </div>
+            
+            <!-- 单个镜像表单 -->
+            <div class="form-section" id="single-form">
+                <h3>🎯 单个镜像同步</h3>
+                <div class="form-group">
+                    <label class="form-label">镜像名称</label>
+                    <input type="text" class="form-input" id="single-image" placeholder="例如: nginx:latest, redis:alpine">
+                </div>
+            </div>
+            
+            <!-- 多个镜像表单 -->
+            <div class="form-section" id="multiple-form">
+                <h3>📋 多个镜像同步</h3>
+                <div class="form-group">
+                    <label class="form-label">镜像列表 (每行一个)</label>
+                    <textarea class="form-textarea" id="multiple-images" placeholder="nginx:latest&#10;redis:alpine&#10;mysql:8.0&#10;postgres:15"></textarea>
+                </div>
+            </div>
+            
+            <!-- 预设组合表单 -->
+            <div class="form-section" id="preset-form">
+                <h3>⚡ 预设镜像组合</h3>
+                <div class="form-group">
+                    <label class="form-label">选择预设组合</label>
+                    <div class="preset-buttons">
+                        <div class="preset-btn" data-preset="web-servers">
+                            🌐 Web服务器<br>
+                            <small>nginx, apache, caddy</small>
+                        </div>
+                        <div class="preset-btn" data-preset="databases">
+                            🗄️ 数据库<br>
+                            <small>mysql, postgres, redis</small>
+                        </div>
+                        <div class="preset-btn" data-preset="ai-ml">
+                            🤖 AI/ML<br>
+                            <small>pytorch, tensorflow</small>
+                        </div>
+                        <div class="preset-btn" data-preset="dev-tools">
+                            🛠️ 开发工具<br>
+                            <small>node, python, golang</small>
+                        </div>
+                        <div class="preset-btn" data-preset="monitoring">
+                            📊 监控工具<br>
+                            <small>prometheus, grafana</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">预览镜像列表</label>
+                    <textarea class="form-textarea" id="preset-preview" readonly></textarea>
+                </div>
+            </div>
+            
+            <!-- 同步选项 -->
+            <div class="form-section active" id="options-form">
+                <h3>⚙️ 同步选项</h3>
+                <div class="options-grid">
+                    <div class="form-group">
+                        <label class="form-label">目标仓库</label>
+                        <select class="form-select" id="target-registry">
+                            <option value="aliyun-hangzhou">阿里云杭州</option>
+                            <option value="aliyun-beijing">阿里云北京</option>
+                            <option value="aliyun-shanghai">阿里云上海</option>
+                            <option value="aliyun-shenzhen">阿里云深圳</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">同步模式</label>
+                        <select class="form-select" id="sync-options">
+                            <option value="normal">正常同步</option>
+                            <option value="force">强制同步</option>
+                            <option value="dry-run">干运行 (预览)</option>
+                            <option value="verify-only">仅验证</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">最大并发数</label>
+                        <select class="form-select" id="max-parallel">
+                            <option value="1">1 (串行)</option>
+                            <option value="2">2</option>
+                            <option value="3" selected>3 (推荐)</option>
+                            <option value="5">5</option>
+                            <option value="10">10 (高速)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">通知方式</label>
+                        <select class="form-select" id="notification">
+                            <option value="summary" selected>摘要通知</option>
+                            <option value="detailed">详细通知</option>
+                            <option value="none">无通知</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 同步按钮 -->
+            <button class="sync-button" id="sync-btn" disabled>
+                🚀 开始同步
+            </button>
+            
+            <!-- 状态面板 -->
+            <div class="status-panel" id="status-panel">
+                <h3>📊 同步状态</h3>
+                <div id="status-content">
+                    <!-- 状态信息将在这里显示 -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // 预设镜像组合
+        const presetGroups = {
+            'web-servers': [
+                'nginx:latest',
+                'nginx:alpine', 
+                'httpd:latest',
+                'caddy:latest'
+            ],
+            'databases': [
+                'mysql:8.0',
+                'postgres:15',
+                'redis:7-alpine',
+                'mongo:6'
+            ],
+            'ai-ml': [
+                'pytorch/pytorch:latest',
+                'tensorflow/tensorflow:latest',
+                'jupyter/scipy-notebook:latest'
+            ],
+            'dev-tools': [
+                'node:18-alpine',
+                'python:3.11-slim',
+                'golang:1.21-alpine'
+            ],
+            'monitoring': [
+                'prom/prometheus:latest',
+                'grafana/grafana:latest',
+                'jaegertracing/all-in-one:latest'
+            ]
+        };
+        
+        let currentMode = null;
+        let selectedPreset = null;
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeEventListeners();
+            updateSyncButton();
+        });
+        
+        function initializeEventListeners() {
+            // 模式选择
+            document.querySelectorAll('.mode-card').forEach(card => {
+                card.addEventListener('click', function() {
+                    selectMode(this.dataset.mode);
+                });
+            });
+            
+            // 预设按钮
+            document.querySelectorAll('.preset-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    selectPreset(this.dataset.preset);
+                });
+            });
+            
+            // 输入监听
+            document.getElementById('single-image').addEventListener('input', updateSyncButton);
+            document.getElementById('multiple-images').addEventListener('input', updateSyncButton);
+            
+            // 同步按钮
+            document.getElementById('sync-btn').addEventListener('click', startSync);
+        }
+        
+        function selectMode(mode) {
+            // 更新模式卡片状态
+            document.querySelectorAll('.mode-card').forEach(card => {
+                card.classList.remove('active');
+            });
+            document.querySelector(`[data-mode="${mode}"]`).classList.add('active');
+            
+            // 显示对应表单
+            document.querySelectorAll('.form-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            document.getElementById(`${mode}-form`).classList.add('active');
+            document.getElementById('options-form').classList.add('active');
+            
+            currentMode = mode;
+            updateSyncButton();
+        }
+        
+        function selectPreset(preset) {
+            // 更新预设按钮状态
+            document.querySelectorAll('.preset-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-preset="${preset}"]`).classList.add('active');
+            
+            // 更新预览
+            const images = presetGroups[preset];
+            document.getElementById('preset-preview').value = images.join('\n');
+            
+            selectedPreset = preset;
+            updateSyncButton();
+        }
+        
+        function updateSyncButton() {
+            const btn = document.getElementById('sync-btn');
+            let hasValidInput = false;
+            
+            switch(currentMode) {
+                case 'single':
+                    hasValidInput = document.getElementById('single-image').value.trim() !== '';
+                    break;
+                case 'multiple':
+                    hasValidInput = document.getElementById('multiple-images').value.trim() !== '';
+                    break;
+                case 'preset':
+                    hasValidInput = selectedPreset !== null;
+                    break;
+            }
+            
+            btn.disabled = !hasValidInput;
+            btn.textContent = hasValidInput ? '🚀 开始同步' : '请选择要同步的镜像';
+        }
+        
+        function startSync() {
+            const btn = document.getElementById('sync-btn');
+            btn.disabled = true;
+            btn.textContent = '🔄 准备同步...';
+            
+            // 收集同步参数
+            const syncData = collectSyncData();
+            
+            // 显示状态面板
+            showStatus('准备同步...', 'info');
+            
+            // 生成GitHub Actions触发URL
+            const githubUrl = generateGitHubActionsUrl(syncData);
+            
+            // 显示结果
+            showSyncInstructions(githubUrl, syncData);
+            
+            // 重置按钮
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '🚀 开始同步';
+            }, 2000);
+        }
+        
+        function collectSyncData() {
+            let images = [];
+            
+            switch(currentMode) {
+                case 'single':
+                    images = [document.getElementById('single-image').value.trim()];
+                    break;
+                case 'multiple':
+                    images = document.getElementById('multiple-images').value
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(line => line && !line.startsWith('#'));
+                    break;
+                case 'preset':
+                    images = presetGroups[selectedPreset] || [];
+                    break;
+            }
+            
+            return {
+                mode: currentMode,
+                images: images,
+                targetRegistry: document.getElementById('target-registry').value,
+                syncOptions: document.getElementById('sync-options').value,
+                maxParallel: document.getElementById('max-parallel').value,
+                notification: document.getElementById('notification').value
+            };
+        }
+        
+        function generateGitHubActionsUrl(data) {
+            const baseUrl = 'https://github.com/oMygpt/sync-docker-image/actions/workflows/sync-images-elegant.yml';
+            const params = new URLSearchParams({
+                'sync_mode': data.mode === 'preset' ? 'preset' : (data.images.length === 1 ? 'single' : 'multiple'),
+                'target_registry': data.targetRegistry,
+                'sync_options': data.syncOptions,
+                'max_parallel': data.maxParallel,
+                'notification': data.notification
+            });
+            
+            if (data.mode === 'single') {
+                params.append('single_image', data.images[0]);
+            } else if (data.mode === 'multiple') {
+                params.append('multiple_images', data.images.join('\n'));
+            } else if (data.mode === 'preset') {
+                params.append('preset_group', selectedPreset);
+            }
+            
+            return `${baseUrl}?${params.toString()}`;
+        }
+        
+        function showStatus(message, type) {
+            const panel = document.getElementById('status-panel');
+            const content = document.getElementById('status-content');
+            
+            panel.classList.add('active');
+            
+            const statusItem = document.createElement('div');
+            statusItem.className = 'status-item';
+            
+            const icon = getStatusIcon(type);
+            statusItem.innerHTML = `
+                <span class="status-icon status-${type}">${icon}</span>
+                <span>${message}</span>
+            `;
+            
+            content.appendChild(statusItem);
+            
+            // 滚动到底部
+            panel.scrollTop = panel.scrollHeight;
+        }
+        
+        function getStatusIcon(type) {
+            const icons = {
+                'success': '✅',
+                'error': '❌',
+                'warning': '⚠️',
+                'info': 'ℹ️'
+            };
+            return icons[type] || 'ℹ️';
+        }
+        
+        function showSyncInstructions(githubUrl, data) {
+            showStatus(`准备同步 ${data.images.length} 个镜像`, 'info');
+            showStatus('同步配置已生成', 'success');
+            
+            // 创建指令面板
+            const instructionsHtml = `
+                <div style="background: #e3f2fd; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                    <h4>🔗 同步指令</h4>
+                    <p style="margin: 10px 0;">请选择以下方式之一来触发同步：</p>
+                    
+                    <div style="margin: 15px 0;">
+                        <strong>方式1: 直接访问GitHub Actions</strong><br>
+                        <a href="${githubUrl}" target="_blank" style="color: #2196F3; word-break: break-all;">
+                            点击这里在GitHub中手动触发同步
+                        </a>
+                    </div>
+                    
+                    <div style="margin: 15px 0;">
+                        <strong>方式2: 复制镜像列表到文件</strong><br>
+                        <textarea readonly style="width: 100%; height: 80px; margin: 5px 0; font-family: monospace; font-size: 12px;">${data.images.join('\n')}</textarea>
+                        <small>将上述内容复制到 upload/images.md 文件并提交到GitHub</small>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('status-content').innerHTML += instructionsHtml;
+        }
+    </script>
+</body>
+</html>

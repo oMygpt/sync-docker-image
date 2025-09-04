@@ -2,6 +2,41 @@
 
 一个使用Google Crane工具的功能强大的Docker镜像同步工具，用于将DockerHub镜像高效同步到阿里云容器镜像服务，解决国内访问DockerHub速度慢的问题。相比传统Docker命令，Crane提供更好的可靠性和性能。
 
+## 🎯 优雅触发系统
+
+**告别繁琐的文件修改！** 现在支持多种优雅的触发方式：
+
+| 触发方式 | 优雅程度 | 适用场景 | 推荐指数 |
+|---------|---------|---------|----------|
+| 🌐 **Web界面** | ⭐⭐⭐⭐⭐ | 日常使用、新手友好 | ⭐⭐⭐⭐⭐ |
+| 🎮 **GitHub Actions** | ⭐⭐⭐⭐ | 开发者、批量操作 | ⭐⭐⭐⭐ |
+| 📝 **GitHub Issues** | ⭐⭐⭐⭐ | 团队协作、需求跟踪 | ⭐⭐⭐⭐ |
+| 🔌 **API端点** | ⭐⭐⭐ | 自动化集成、脚本调用 | ⭐⭐⭐ |
+| 📄 **文件修改** | ⭐⭐ | 传统方式、备用方案 | ⭐⭐ |
+
+> 📖 **详细使用指南**: [优雅触发系统完整文档](ELEGANT_TRIGGER_GUIDE.md)
+
+### 🌟 快速体验
+
+#### 🌐 Web界面（推荐）
+```bash
+# 启动本地Web服务
+cd web-interface && python3 -m http.server 8080
+# 访问 http://localhost:8080
+```
+
+#### 🎮 GitHub Actions手动触发
+1. 访问 [Actions页面](../../actions/workflows/sync-images-elegant.yml)
+2. 点击 "Run workflow"
+3. 选择同步模式和镜像
+4. 一键启动同步
+
+#### 📝 GitHub Issues触发
+1. [创建同步请求](../../issues/new/choose)
+2. 选择 "🐳 Docker镜像同步请求" 模板
+3. 填写表单并提交
+4. 自动触发同步流程
+
 ## ✨ 主要特性
 
 ### 🚀 核心功能

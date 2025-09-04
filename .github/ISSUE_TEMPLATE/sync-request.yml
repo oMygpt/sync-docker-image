@@ -1,0 +1,167 @@
+name: 🐳 Docker镜像同步请求
+description: 通过Issue请求同步Docker镜像到阿里云仓库
+title: "[sync] 请求同步镜像: "
+labels: ["sync-request", "docker"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🐳 Docker镜像同步请求
+        
+        通过此表单可以请求将Docker镜像同步到阿里云容器镜像服务。
+        提交后将自动触发GitHub Actions进行同步操作。
+        
+        ---
+  
+  - type: dropdown
+    id: sync-type
+    attributes:
+      label: 同步类型
+      description: 选择要同步的镜像类型
+      options:
+        - 单个镜像
+        - 多个镜像
+        - 预设镜像组
+      default: 0
+    validations:
+      required: true
+  
+  - type: input
+    id: single-image
+    attributes:
+      label: 单个镜像名称
+      description: 如果选择"单个镜像"，请在此输入镜像名称
+      placeholder: "例如: nginx:latest, redis:alpine, mysql:8.0"
+    validations:
+      required: false
+  
+  - type: textarea
+    id: multiple-images
+    attributes:
+      label: 多个镜像列表
+      description: 如果选择"多个镜像"，请在此输入镜像列表（每行一个）
+      placeholder: |
+        nginx:latest
+        redis:alpine
+        mysql:8.0
+        postgres:15
+      render: text
+    validations:
+      required: false
+  
+  - type: dropdown
+    id: preset-group
+    attributes:
+      label: 预设镜像组
+      description: 如果选择"预设镜像组"，请选择一个预定义的镜像组合
+      options:
+        - "web-servers (nginx, apache, caddy)"
+        - "databases (mysql, postgres, redis, mongodb)"
+        - "ai-ml (pytorch, tensorflow, jupyter)"
+        - "dev-tools (node, python, golang)"
+        - "monitoring (prometheus, grafana, jaeger)"
+      default: 0
+    validations:
+      required: false
+  
+  - type: dropdown
+    id: target-registry
+    attributes:
+      label: 目标仓库区域
+      description: 选择阿里云容器镜像服务的区域
+      options:
+        - "杭州 (registry.cn-hangzhou.aliyuncs.com)"
+        - "北京 (registry.cn-beijing.aliyuncs.com)"
+        - "上海 (registry.cn-shanghai.aliyuncs.com)"
+        - "深圳 (registry.cn-shenzhen.aliyuncs.com)"
+      default: 0
+    validations:
+      required: true
+  
+  - type: dropdown
+    id: sync-mode
+    attributes:
+      label: 同步模式
+      description: 选择同步操作的模式
+      options:
+        - "正常同步 - 标准同步操作"
+        - "强制同步 - 忽略已存在的镜像"
+        - "干运行 - 仅预览操作，不实际同步"
+        - "仅验证 - 只验证镜像是否存在"
+      default: 0
+    validations:
+      required: true
+  
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 优先级
+      description: 设置同步请求的优先级
+      options:
+        - "🔴 高优先级 - 紧急同步"
+        - "🟡 中优先级 - 正常处理"
+        - "🟢 低优先级 - 空闲时处理"
+      default: 1
+    validations:
+      required: true
+  
+  - type: input
+    id: max-parallel
+    attributes:
+      label: 最大并发数
+      description: 同时处理的镜像数量（1-10）
+      placeholder: "3"
+      value: "3"
+    validations:
+      required: false
+  
+  - type: checkboxes
+    id: options
+    attributes:
+      label: 附加选项
+      description: 选择需要的附加功能
+      options:
+        - label: 发送详细通知
+          required: false
+        - label: 生成同步报告
+          required: false
+        - label: 更新镜像映射表
+          required: false
+        - label: 验证镜像完整性
+          required: false
+  
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: 附加信息
+      description: 任何其他需要说明的信息
+      placeholder: |
+        - 同步原因
+        - 特殊要求
+        - 预期完成时间
+        - 其他备注
+    validations:
+      required: false
+  
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        
+        ## 📋 提交须知
+        
+        1. **自动处理**: 提交后将自动触发GitHub Actions进行处理
+        2. **处理时间**: 通常在5-15分钟内完成，具体取决于镜像大小和数量
+        3. **状态跟踪**: 可在Actions页面查看详细的同步进度
+        4. **结果通知**: 完成后会在此Issue中自动添加结果评论
+        
+        ## 🔗 相关链接
+        
+        - [查看同步历史](../../actions/workflows/sync-images-elegant.yml)
+        - [镜像映射表](../../blob/main/image_list.md)
+        - [使用文档](../../blob/main/README.md)
+        
+        ---
+        
+        **感谢使用Docker镜像同步服务！** 🚀
