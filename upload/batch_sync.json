@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Docker镜像批量同步配置",
+  "description": "用于配置Docker镜像批量同步的JSON文件",
+  "version": "1.0.0",
+  "lastUpdated": "2024-01-15T10:00:00Z",
+  
+  "config": {
+    "maxRetries": 3,
+    "retryDelay": 10,
+    "maxParallel": 3,
+    "timeout": 1800,
+    "dryRun": false,
+    "forceSync": false,
+    "cleanupOnSuccess": true,
+    "skipExisting": true,
+    "enableNotifications": false
+  },
+  
+  "registries": {
+    "source": {
+      "name": "Docker Hub",
+      "url": "docker.io",
+      "auth": {
+        "required": true,
+        "type": "token"
+      }
+    },
+    "target": {
+      "name": "阿里云容器镜像服务",
+      "url": "registry.cn-hangzhou.aliyuncs.com",
+      "namespace": "your-namespace",
+      "auth": {
+        "required": true,
+        "type": "password"
+      }
+    }
+  },
+  
+  "images": [
+    {
+      "source": "nginx:latest",
+      "target": "nginx:latest",
+      "priority": "high",
+      "description": "Nginx web server",
+      "tags": ["web", "server", "production"],
+      "config": {
+        "retries": 5,
+        "timeout": 900
+      }
+    },
+    {
+      "source": "redis:alpine",
+      "target": "redis:alpine",
+      "priority": "medium",
+      "description": "Redis in-memory database",
+      "tags": ["database", "cache", "alpine"],
+      "config": {
+        "skipIfExists": true
+      }
+    },
+    {
+      "source": "mysql:8.0",
+      "target": "mysql:8.0",
+      "priority": "high",
+      "description": "MySQL database server",
+      "tags": ["database", "sql", "production"],
+      "config": {
+        "retries": 3,
+        "verifyAfterSync": true
+      }
+    },
+    {
+      "source": "node:18-alpine",
+      "target": "node:18-alpine",
+      "priority": "medium",
+      "description": "Node.js runtime",
+      "tags": ["runtime", "javascript", "alpine"],
+      "config": {
+        "cleanupAfterSync": true
+      }
+    },
+    {
+      "source": "python:3.11-slim",
+      "target": "python:3.11-slim",
+      "priority": "low",
+      "description": "Python runtime",
+      "tags": ["runtime", "python", "slim"],
+      "enabled": true
+    }
+  ],
+  
+  "imageGroups": {
+    "web-stack": {
+      "description": "Web开发技术栈",
+      "images": ["nginx:latest", "node:18-alpine"],
+      "syncOrder": "parallel",
+      "priority": "high"
+    },
+    "database-stack": {
+      "description": "数据库技术栈",
+      "images": ["mysql:8.0", "redis:alpine"],
+      "syncOrder": "sequential",
+      "priority": "high"
+    },
+    "development-tools": {
+      "description": "开发工具",
+      "images": ["python:3.11-slim"],
+      "syncOrder": "parallel",
+      "priority": "low"
+    }
+  },
+  
+  "schedules": [
+    {
+      "name": "daily-sync",
+      "description": "每日同步高优先级镜像",
+      "cron": "0 2 * * *",
+      "imageGroups": ["web-stack", "database-stack"],
+      "enabled": false
+    },
+    {
+      "name": "weekly-full-sync",
+      "description": "每周完整同步",
+      "cron": "0 1 * * 0",
+      "imageGroups": ["web-stack", "database-stack", "development-tools"],
+      "config": {
+        "forceSync": true
+      },
+      "enabled": false
+    }
+  ],
+  
+  "notifications": {
+    "email": {
+      "enabled": false,
+      "recipients": ["admin@example.com"],
+      "events": ["sync_complete", "sync_failed", "sync_warning"]
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "https://hooks.slack.com/services/xxx/xxx/xxx",
+      "events": ["sync_failed"],
+      "format": "slack"
+    },
+    "dingtalk": {
+      "enabled": false,
+      "webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
+      "secret": "your-secret",
+      "events": ["sync_complete", "sync_failed"]
+    }
+  },
+  
+  "monitoring": {
+    "enabled": false,
+    "metrics": {
+      "collectDuration": true,
+      "collectSize": true,
+      "collectErrors": true,
+      "collectRetries": true
+    },
+    "export": {
+      "format": "prometheus",
+      "endpoint": "http://localhost:9090/metrics"
+    }
+  },
+  
+  "security": {
+    "verifySignatures": false,
+    "scanVulnerabilities": false,
+    "maxVulnerabilityLevel": "HIGH",
+    "trustedRegistries": [
+      "docker.io",
+      "registry.cn-hangzhou.aliyuncs.com"
+    ]
+  },
+  
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "output": "file",
+    "file": {
+      "path": "logs/batch_sync.log",
+      "maxSize": "100MB",
+      "maxBackups": 10,
+      "maxAge": 30
+    }
+  },
+  
+  "hooks": {
+    "preSync": {
+      "enabled": false,
+      "script": "scripts/pre_sync.sh",
+      "timeout": 300
+    },
+    "postSync": {
+      "enabled": false,
+      "script": "scripts/post_sync.sh",
+      "timeout": 300
+    },
+    "onError": {
+      "enabled": false,
+      "script": "scripts/on_error.sh",
+      "timeout": 60
+    }
+  },
+  
+  "metadata": {
+    "author": "Docker Sync Team",
+    "contact": "admin@example.com",
+    "documentation": "https://github.com/your-org/docker-sync/blob/main/README.md",
+    "license": "MIT",
+    "tags": ["docker", "sync", "mirror", "aliyun"]
+  }
+}
