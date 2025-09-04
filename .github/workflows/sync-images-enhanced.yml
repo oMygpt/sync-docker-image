@@ -215,15 +215,6 @@ jobs:
         run: |
           echo "🔐 配置认证信息..."
           
-          # 配置Docker凭证存储
-          mkdir -p ~/.docker
-          cat > ~/.docker/config.json << EOF
-          {
-            "auths": {},
-            "credsStore": "secretservice"
-          }
-          EOF
-          
           # 配置阿里云CLI
           aliyun configure set \
             --mode AK \
@@ -232,26 +223,44 @@ jobs:
             --access-key-secret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
           
           # 登录Docker Hub（仅在需要时）
+          DOCKERHUB_LOGIN_SUCCESS=false
           if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
-            echo "登录Docker Hub..."
-            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-            
-            # 验证Docker Hub登录
-            if docker info | grep -q "Username: ${{ secrets.DOCKERHUB_USERNAME }}"; then
+            echo "🐳 登录Docker Hub..."
+            if echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin; then
               echo "✅ Docker Hub认证成功"
+              DOCKERHUB_LOGIN_SUCCESS=true
+              
+              # 测试认证是否真正有效
+              if docker pull hello-world:latest > /dev/null 2>&1; then
+                echo "✅ Docker Hub认证验证通过"
+                docker rmi hello-world:latest > /dev/null 2>&1 || true
+              else
+                echo "⚠️ Docker Hub认证测试失败，将尝试匿名拉取"
+                docker logout > /dev/null 2>&1 || true
+                DOCKERHUB_LOGIN_SUCCESS=false
+              fi
             else
-              echo "⚠️ Docker Hub认证可能失败，但继续执行（公开镜像不需要认证）"
+              echo "⚠️ Docker Hub登录失败，将以匿名方式拉取公开镜像"
+              DOCKERHUB_LOGIN_SUCCESS=false
             fi
           else
             echo "⚠️ 未配置Docker Hub凭证，将以匿名方式拉取公开镜像"
           fi
           
-          # 登录阿里云容器服务
-          echo "登录阿里云容器镜像服务..."
-          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin
+          # 设置环境变量供后续步骤使用
+          echo "DOCKERHUB_LOGIN_SUCCESS=$DOCKERHUB_LOGIN_SUCCESS" >> $GITHUB_ENV
           
-          if docker info | grep -q "${{ secrets.ALIYUN_REGISTRY }}"; then
+          # 登录阿里云容器服务
+          echo "☁️ 登录阿里云容器镜像服务..."
+          if echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin; then
             echo "✅ 阿里云认证成功"
+            
+            # 验证阿里云认证
+            if docker info | grep -q "${{ secrets.ALIYUN_REGISTRY }}"; then
+              echo "✅ 阿里云认证验证通过"
+            else
+              echo "⚠️ 阿里云认证验证失败，但登录成功"
+            fi
           else
             echo "❌ 阿里云认证失败"
             exit 1
@@ -391,14 +400,63 @@ jobs:
           # 步骤2: 拉取源镜像
           if [[ "$sync_status" == "SUCCESS" ]]; then
             report_progress "拉取镜像" "⬇️" "从Docker Hub拉取 $SOURCE_IMAGE"
-            if ! retry_command "$MAX_RETRIES" "$RETRY_DELAY" "拉取源镜像" docker pull "$SOURCE_IMAGE"; then
-              sync_status="FAILED"
-              error_message="拉取源镜像失败"
-            else
+            
+            # 智能拉取函数
+            pull_image_smart() {
+              local image="$1"
+              local max_attempts=3
+              local attempt=1
+              
+              while [[ $attempt -le $max_attempts ]]; do
+                log "INFO" "拉取镜像尝试 $attempt/$max_attempts: $image"
+                
+                if docker pull "$image"; then
+                  log "INFO" "镜像拉取成功: $image"
+                  return 0
+                else
+                  local exit_code=$?
+                  log "WARN" "镜像拉取失败 (退出码: $exit_code): $image"
+                  
+                  # 如果是认证错误，尝试重新登录或匿名拉取
+                  if [[ $exit_code -eq 1 ]] && [[ $attempt -eq 1 ]]; then
+                    log "INFO" "检测到可能的认证问题，尝试匿名拉取..."
+                    docker logout > /dev/null 2>&1 || true
+                    
+                    # 尝试匿名拉取
+                    if docker pull "$image"; then
+                      log "INFO" "匿名拉取成功: $image"
+                      return 0
+                    else
+                      log "WARN" "匿名拉取也失败，尝试重新认证..."
+                      
+                      # 如果有DockerHub凭证，尝试重新登录
+                      if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
+                        echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin > /dev/null 2>&1 || true
+                      fi
+                    fi
+                  fi
+                  
+                  if [[ $attempt -lt $max_attempts ]]; then
+                    log "INFO" "等待 $RETRY_DELAY 秒后重试..."
+                    sleep "$RETRY_DELAY"
+                  fi
+                fi
+                
+                ((attempt++))
+              done
+              
+              log "ERROR" "镜像拉取在 $max_attempts 次尝试后失败: $image"
+              return 1
+            }
+            
+            if pull_image_smart "$SOURCE_IMAGE"; then
               # 获取镜像信息
               image_size=$(docker image inspect "$SOURCE_IMAGE" --format '{{.Size}}' | numfmt --to=iec 2>/dev/null || echo "未知")
               image_id=$(docker image inspect "$SOURCE_IMAGE" --format '{{.Id}}' | cut -d':' -f2 | cut -c1-12 2>/dev/null || echo "未知")
               log "INFO" "镜像信息 - ID: $image_id, 大小: $image_size"
+            else
+              sync_status="FAILED"
+              error_message="拉取源镜像失败 - 请检查镜像名称是否正确或网络连接"
             fi
           fi
           
