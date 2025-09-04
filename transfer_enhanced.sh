@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# 增强版Docker镜像同步脚本
-# 功能：自动化拉取、打标签并推送Docker镜像，包含完整的验证、状态跟踪和错误处理
+# Enhanced Docker Image Transfer Script with Crane
+# 支持批量镜像同步、错误处理、进度报告和日志记录
+# 使用crane工具替代docker命令以提高可靠性
 
 set -euo pipefail  # 严格模式：遇到错误立即退出
 
@@ -105,23 +106,27 @@ validate_image_name() {
     return 0
 }
 
-# 检查Docker是否运行
-check_docker() {
-    log "INFO" "检查Docker服务状态..."
+# 检查必需的工具
+check_dependencies() {
+    local missing_tools=()
     
-    if ! command -v docker &> /dev/null; then
-        log "ERROR" "Docker未安装或不在PATH中"
-        return 1
+    for tool in crane jq curl; do
+        if ! command -v "$tool" &> /dev/null; then
+            missing_tools+=("$tool")
+        fi
+    done
+    
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        log "ERROR" "缺少必需的工具: ${missing_tools[*]}"
+        log "ERROR" "请安装缺少的工具后重试"
+        log "INFO" "安装crane: go install github.com/google/go-containerregistry/cmd/crane@latest"
+        exit 1
     fi
     
-    if ! docker info &> /dev/null; then
-        log "ERROR" "Docker服务未运行或无权限访问"
-        log "INFO" "请确保Docker服务已启动且当前用户有权限访问"
-        return 1
-    fi
-    
-    log "SUCCESS" "Docker服务运行正常"
-    return 0
+    # 验证crane版本
+    local crane_version
+    crane_version=$(crane version 2>/dev/null || echo "unknown")
+    log "INFO" "依赖检查通过 - crane版本: $crane_version"
 }
 
 # 检查网络连接
@@ -189,81 +194,149 @@ retry_command() {
     done
 }
 
-# 拉取源镜像
-pull_source_image() {
-    log "INFO" "开始拉取源镜像: $SOURCE_IMAGE"
-    show_progress 1 5 "拉取镜像"
+# 配置Crane认证
+setup_authentication() {
+    log "INFO" "配置认证信息..."
     
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log "INFO" "[DRY RUN] 模拟拉取镜像: $SOURCE_IMAGE"
-        return 0
+    # 检查必需的环境变量
+    local required_vars=(
+        "ALIYUN_REGISTRY"
+        "ALIYUN_USERNAME" 
+        "ALIYUN_PASSWORD"
+        "ALIYUN_NAMESPACE"
+    )
+    
+    local missing_vars=()
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var:-}" ]]; then
+            missing_vars+=("$var")
+        fi
+    done
+    
+    if [[ ${#missing_vars[@]} -gt 0 ]]; then
+        log "ERROR" "缺少必需的环境变量: ${missing_vars[*]}"
+        exit 1
     fi
     
-    retry_command "$MAX_RETRIES" "$RETRY_DELAY" "拉取源镜像" docker pull "$SOURCE_IMAGE"
+    # 登录阿里云容器服务
+    log "INFO" "登录阿里云容器服务..."
+    if crane auth login -u "$ALIYUN_USERNAME" -p "$ALIYUN_PASSWORD" "$ALIYUN_REGISTRY"; then
+        log "INFO" "阿里云认证成功"
+    else
+        log "ERROR" "阿里云认证失败"
+        exit 1
+    fi
     
-    # 验证镜像是否成功拉取
-    if docker image inspect "$SOURCE_IMAGE" &> /dev/null; then
-        local image_size=$(docker image inspect "$SOURCE_IMAGE" --format '{{.Size}}' | numfmt --to=iec)
-        local image_id=$(docker image inspect "$SOURCE_IMAGE" --format '{{.Id}}' | cut -d':' -f2 | cut -c1-12)
-        log "SUCCESS" "源镜像拉取成功！镜像ID: $image_id, 大小: $image_size"
+    # 可选：登录DockerHub（如果配置了凭证）
+    if [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]]; then
+        log "INFO" "登录Docker Hub..."
+        if crane auth login -u "$DOCKERHUB_USERNAME" -p "$DOCKERHUB_TOKEN" docker.io; then
+            log "INFO" "DockerHub认证成功"
+        else
+            log "WARN" "DockerHub认证失败，将使用匿名拉取"
+        fi
+    else
+        log "INFO" "跳过DockerHub认证，将使用匿名拉取"
+    fi
+    
+    log "INFO" "认证配置完成"
+}
+
+# 验证源镜像存在
+verify_source_image() {
+    log "INFO" "验证源镜像: $SOURCE_IMAGE"
+    
+    if [[ -z "$SOURCE_IMAGE" ]]; then
+        log "ERROR" "源镜像名称为空"
+        return 1
+    fi
+    
+    # 使用crane ls检查镜像是否存在
+    local repo_name=$(echo $SOURCE_IMAGE | cut -d':' -f1)
+    local tag_name=$(echo $SOURCE_IMAGE | cut -d':' -f2)
+    
+    if crane ls "$repo_name" | grep -q "$tag_name"; then
+        log "SUCCESS" "源镜像验证成功: $SOURCE_IMAGE"
         return 0
     else
-        log "ERROR" "镜像拉取后验证失败"
+        log "ERROR" "源镜像不存在或无法访问: $SOURCE_IMAGE"
         return 1
     fi
 }
 
-# 标签镜像
-tag_image() {
-    log "INFO" "为镜像打标签: $SOURCE_IMAGE -> $DEST_IMAGE"
-    show_progress 2 5 "打标签"
+# 使用crane复制镜像
+copy_image() {
+    log "INFO" "使用crane复制镜像: $SOURCE_IMAGE -> $DEST_IMAGE"
     
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log "INFO" "[DRY RUN] 模拟打标签: $SOURCE_IMAGE -> $DEST_IMAGE"
-        return 0
+    if [[ -z "$DEST_IMAGE" ]]; then
+        log "ERROR" "目标镜像名称为空"
+        return 1
     fi
     
-    if docker tag "$SOURCE_IMAGE" "$DEST_IMAGE"; then
-        log "SUCCESS" "镜像标签创建成功"
+    # 方法1: 尝试直接复制
+    log "INFO" "尝试直接复制镜像..."
+    if crane copy "$SOURCE_IMAGE" "$DEST_IMAGE" 2>&1 | tee /tmp/copy.log; then
+        log "SUCCESS" "✅ 直接复制成功: $DEST_IMAGE"
         return 0
     else
-        log "ERROR" "镜像标签创建失败"
+        log "WARN" "直接复制失败，尝试备用方法..."
+        
+        # 方法2: 通过本地缓存方式
+        log "INFO" "使用本地缓存方式..."
+        local temp_tar="/tmp/$(basename $SOURCE_IMAGE | tr ':/' '_').tar"
+        
+        if crane pull "$SOURCE_IMAGE" "$temp_tar"; then
+            log "INFO" "镜像已拉取到本地缓存: $temp_tar"
+            if crane push "$temp_tar" "$DEST_IMAGE"; then
+                log "SUCCESS" "✅ 通过本地缓存复制成功: $DEST_IMAGE"
+                rm -f "$temp_tar"
+                return 0
+            else
+                log "ERROR" "本地缓存推送失败"
+                rm -f "$temp_tar"
+                cat /tmp/copy.log || true
+                return 1
+            fi
+        else
+            log "ERROR" "无法拉取镜像到本地缓存"
+            return 1
+        fi
+    fi
+}
+
+# 验证目标镜像推送成功
+verify_target_image() {
+    log "INFO" "验证目标镜像: $DEST_IMAGE"
+    
+    if [[ -z "$DEST_IMAGE" ]]; then
+        log "ERROR" "目标镜像名称为空"
+        return 1
+    fi
+    
+    # 使用crane验证镜像是否存在
+    local repo_name=$(echo $DEST_IMAGE | cut -d':' -f1)
+    local tag_name=$(echo $DEST_IMAGE | cut -d':' -f2)
+    
+    if crane ls "$repo_name" | grep -q "$tag_name"; then
+        log "SUCCESS" "目标镜像验证成功: $DEST_IMAGE"
+        return 0
+    else
+        log "ERROR" "目标镜像验证失败: $DEST_IMAGE"
         return 1
     fi
 }
 
-# 推送目标镜像
-push_dest_image() {
-    log "INFO" "推送目标镜像: $DEST_IMAGE"
-    show_progress 3 5 "推送镜像"
+# 清理临时文件
+cleanup_temp_files() {
+    log "INFO" "清理临时文件..."
     
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log "INFO" "[DRY RUN] 模拟推送镜像: $DEST_IMAGE"
-        return 0
-    fi
+    # 清理临时tar文件
+    find /tmp -name "*.tar" -type f -mmin +60 -delete 2>/dev/null || true
     
-    retry_command "$MAX_RETRIES" "$RETRY_DELAY" "推送目标镜像" docker push "$DEST_IMAGE"
+    # 清理日志文件
+    rm -f /tmp/copy.log 2>/dev/null || true
     
-    log "SUCCESS" "目标镜像推送成功！"
-    return 0
-}
-
-# 清理本地镜像
-cleanup_images() {
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log "INFO" "[DRY RUN] 模拟清理本地镜像"
-        return 0
-    fi
-    
-    log "INFO" "清理本地镜像..."
-    show_progress 4 5 "清理镜像"
-    
-    # 只清理目标标签，保留源镜像
-    if docker rmi "$DEST_IMAGE" &> /dev/null; then
-        log "SUCCESS" "已清理目标镜像标签: $DEST_IMAGE"
-    else
-        log "WARN" "清理目标镜像标签失败或镜像不存在"
-    fi
+    log "INFO" "临时文件清理完成"
 }
 
 # 记录同步历史
@@ -493,17 +566,17 @@ main() {
     # 执行同步步骤
     local sync_status="SUCCESS"
     
-    if ! pull_source_image; then
+    if ! verify_source_image; then
         sync_status="FAILED"
-    elif ! tag_image; then
+    elif ! copy_image; then
         sync_status="FAILED"
-    elif ! push_dest_image; then
+    elif ! verify_target_image; then
         sync_status="FAILED"
     fi
     
     # 清理（可选）
     if [[ "$sync_status" == "SUCCESS" ]]; then
-        cleanup_images || true  # 清理失败不影响整体状态
+        cleanup_temp_files || true  # 清理失败不影响整体状态
     fi
     
     # 记录历史

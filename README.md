@@ -1,12 +1,15 @@
-# 🐳 Docker镜像同步系统 - 增强版
+# 🐳 Docker镜像同步系统 - 增强版 (Crane版本)
 
-一个功能强大的Docker镜像同步工具，用于将DockerHub镜像高效同步到阿里云容器镜像服务，解决国内访问DockerHub速度慢的问题。
+一个使用Google Crane工具的功能强大的Docker镜像同步工具，用于将DockerHub镜像高效同步到阿里云容器镜像服务，解决国内访问DockerHub速度慢的问题。相比传统Docker命令，Crane提供更好的可靠性和性能。
 
 ## ✨ 主要特性
 
 ### 🚀 核心功能
+- **Crane工具**: 使用Google Crane替代Docker命令，提供更好的可靠性
+- **智能认证**: 支持DockerHub可选认证，公开镜像可匿名拉取
 - **手动同步**: 支持单个镜像的精确同步控制
 - **批量同步**: 支持多镜像并发同步，提高效率
+- **多重备用**: 直接复制失败时自动使用本地缓存方式
 - **自动化流程**: GitHub Actions自动触发同步
 - **智能重试**: 可配置的重试机制和错误恢复
 - **状态跟踪**: 实时进度显示和详细状态监控
@@ -78,14 +81,13 @@ sync-docker-image/
 
    **阿里云配置（必需）：**
    ```
-   ALIYUN_REGION              # 如：cn-hangzhou
-   ALIYUN_ACCESS_KEY_ID       # 阿里云AccessKey ID
-   ALIYUN_ACCESS_KEY_SECRET   # 阿里云AccessKey Secret
    ALIYUN_REGISTRY           # 如：registry.cn-hangzhou.aliyuncs.com
    ALIYUN_USERNAME           # 阿里云容器镜像服务用户名
    ALIYUN_PASSWORD           # 阿里云容器镜像服务密码
    ALIYUN_NAMESPACE          # 您的命名空间名称
    ```
+
+   > **注意**: 使用Crane工具后，不再需要阿里云CLI相关的ACCESS_KEY配置。
 
    **DockerHub配置（可选，推荐）：**
    ```
@@ -175,10 +177,21 @@ A: 目前支持从DockerHub同步到阿里云容器镜像服务
 ### 1. 环境准备
 
 确保系统已安装以下工具：
-- Docker
+- Google Crane 工具 (推荐)
 - Git
 - Bash (4.0+)
 - jq (用于JSON处理)
+
+#### 安装Crane工具
+
+```bash
+# 使用Go安装
+go install github.com/google/go-containerregistry/cmd/crane@latest
+
+# 或下载预编译二进制文件
+curl -sL "https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_$(uname -s)_$(uname -m).tar.gz" | tar xz -C /tmp/
+sudo mv /tmp/crane /usr/local/bin/
+```
 
 ### 2. 配置认证信息
 
@@ -188,14 +201,13 @@ A: 目前支持从DockerHub同步到阿里云容器镜像服务
 ##### 必需配置（阿里云）
 ```bash
 # 阿里云配置 - 必需
-ALIYUN_REGION=cn-hangzhou
-ALIYUN_ACCESS_KEY_ID=your_access_key_id
-ALIYUN_ACCESS_KEY_SECRET=your_access_key_secret
 ALIYUN_REGISTRY=registry.cn-hangzhou.aliyuncs.com
 ALIYUN_USERNAME=your_aliyun_username
 ALIYUN_PASSWORD=your_aliyun_password
 ALIYUN_NAMESPACE=your_namespace
 ```
+
+> **注意**: 使用Crane工具后，不再需要阿里云CLI相关的ACCESS_KEY配置。
 
 ##### 可选配置（DockerHub）
 ```bash

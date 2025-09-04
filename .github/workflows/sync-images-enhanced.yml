@@ -1,4 +1,4 @@
-name: Enhanced Docker Image Sync
+name: Enhanced Docker Image Sync with Crane
 
 on:
   push:
@@ -31,7 +31,6 @@ env:
   MAX_RETRIES: 3
   RETRY_DELAY: 10
   LOG_LEVEL: INFO
-  CLEANUP_ON_SUCCESS: true
 
 jobs:
   # 预检查作业
@@ -41,6 +40,7 @@ jobs:
       images-count: ${{ steps.parse.outputs.images-count }}
       config-valid: ${{ steps.validate.outputs.config-valid }}
       images-matrix: ${{ steps.parse.outputs.images-matrix }}
+      dockerhub-auth: ${{ steps.validate.outputs.dockerhub-auth }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -50,18 +50,15 @@ jobs:
         run: |
           echo "🔍 验证配置..."
           
-          # 检查必需的secrets（仅阿里云）
+          # 检查必需的secrets (阿里云)
           required_secrets=(
-            "ALIYUN_REGION"
-            "ALIYUN_ACCESS_KEY_ID"
-            "ALIYUN_ACCESS_KEY_SECRET"
             "ALIYUN_REGISTRY"
             "ALIYUN_USERNAME"
             "ALIYUN_PASSWORD"
             "ALIYUN_NAMESPACE"
           )
           
-          # 可选的secrets（DockerHub相关）
+          # 检查可选的secrets (DockerHub)
           optional_secrets=(
             "DOCKERHUB_USERNAME"
             "DOCKERHUB_TOKEN"
@@ -75,30 +72,29 @@ jobs:
           done
           
           if [[ ${#missing_secrets[@]} -gt 0 ]]; then
-            echo "❌ 缺少必需的secrets: ${missing_secrets[*]}"
+            echo "❌ 缺少必需的阿里云secrets: ${missing_secrets[*]}"
             echo "config-valid=false" >> $GITHUB_OUTPUT
             exit 1
           fi
           
-          # 检查可选的DockerHub凭证
-          dockerhub_configured=false
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
-            dockerhub_configured=true
-            echo "✅ DockerHub凭证已配置"
+          # 检查DockerHub凭证（可选）
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "✅ 检测到DockerHub凭证，将使用认证拉取"
+            echo "dockerhub-auth=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ DockerHub凭证未配置，将以匿名方式拉取公开镜像"
+            echo "⚠️ 未配置DockerHub凭证，将使用匿名拉取公开镜像"
+            echo "dockerhub-auth=false" >> $GITHUB_OUTPUT
           fi
           
           echo "✅ 配置验证通过"
           echo "config-valid=true" >> $GITHUB_OUTPUT
         env:
-          ALIYUN_REGION: ${{ secrets.ALIYUN_REGION }}
-          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
-          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
           ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
           ALIYUN_USERNAME: ${{ secrets.ALIYUN_USERNAME }}
           ALIYUN_PASSWORD: ${{ secrets.ALIYUN_PASSWORD }}
           ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Parse image list
         id: parse
@@ -190,39 +186,46 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 使用GitHub Actions runner自带的Docker，跳过Buildx设置以节省时间
-
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.1
+        
       - name: Install dependencies
         run: |
           echo "🔧 安装依赖工具..."
-          
-          # 安装阿里云CLI
-          curl -sSL https://github.com/aliyun/aliyun-cli/releases/download/v3.0.188/aliyun-cli-linux-3.0.188-amd64.tgz | tar -xz
-          sudo mv aliyun /usr/local/bin/
-          aliyun --version
           
           # 安装jq（用于JSON处理）
           sudo apt-get update && sudo apt-get install -y jq
           
           # 创建必要的目录
           mkdir -p temp done logs
+          
+          # 验证crane安装
+          crane version
 
       - name: Configure authentication
         run: |
           echo "🔐 配置认证信息..."
           
-          # 配置阿里云CLI
-          aliyun configure set \
-            --mode AK \
-            --region ${{ secrets.ALIYUN_REGION }} \
-            --access-key-id ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
-            --access-key-secret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
-          
           # 登录阿里云容器服务
-          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin
+          echo "Logging in to Aliyun Container Registry..."
+          if ! crane auth login -u "${{ secrets.ALIYUN_USERNAME }}" -p "${{ secrets.ALIYUN_PASSWORD }}" "${{ secrets.ALIYUN_REGISTRY }}"; then
+            echo "❌ 阿里云认证失败"
+            echo "请检查 ALIYUN_USERNAME 和 ALIYUN_PASSWORD secrets"
+            exit 1
+          fi
+          echo "✅ 阿里云认证成功"
           
-          echo "✅ 阿里云认证配置完成"
-          echo "ℹ️  DockerHub将使用匿名方式拉取公开镜像"
+          # 可选：登录DockerHub（如果配置了凭证）
+          if [[ "${{ needs.pre-check.outputs.dockerhub-auth }}" == "true" ]]; then
+            echo "Logging in to Docker Hub..."
+            if ! crane auth login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io; then
+              echo "⚠️ DockerHub认证失败，将使用匿名拉取"
+            else
+              echo "✅ DockerHub认证成功"
+            fi
+          else
+            echo "ℹ️ 跳过DockerHub认证，将使用匿名拉取"
+          fi
 
       - name: Process single image
         id: sync
@@ -290,26 +293,32 @@ jobs:
             exit 0
           fi
           
-          # 确保阿里云仓库存在
-          ensure_aliyun_repo() {
-            local repo="$1"
-            log "INFO" "检查/创建阿里云仓库: $repo"
+          # 智能镜像拉取函数
+          smart_pull_image() {
+            local source_image="$1"
+            local max_attempts=3
+            local attempt=1
             
-            if ! aliyun cr GetRepository --RepoName="$repo" --RepoNamespace="$NAMESPACE" > /dev/null 2>&1; then
-              log "INFO" "创建阿里云仓库: $repo"
-              if aliyun cr CreateRepository \
-                --RepoName="$repo" \
-                --RepoNamespace="$NAMESPACE" \
-                --RepoType=PUBLIC \
-                --Summary="Mirror of $image_name" > /dev/null 2>&1; then
-                log "INFO" "仓库创建成功: $repo"
+            while [[ $attempt -le $max_attempts ]]; do
+              log "INFO" "尝试拉取镜像 $source_image (第 $attempt/$max_attempts 次)"
+              
+              # 使用crane ls检查镜像是否存在
+              if crane ls "$(echo $source_image | cut -d':' -f1)" | grep -q "$(echo $source_image | cut -d':' -f2)"; then
+                log "INFO" "镜像 $source_image 存在，开始拉取"
+                return 0
               else
-                log "ERROR" "仓库创建失败: $repo"
-                return 1
+                log "WARN" "镜像 $source_image 不存在或无法访问"
+                if [[ $attempt -lt $max_attempts ]]; then
+                  log "INFO" "等待 $RETRY_DELAY 秒后重试..."
+                  sleep $RETRY_DELAY
+                fi
               fi
-            else
-              log "INFO" "仓库已存在: $repo"
-            fi
+              
+              ((attempt++))
+            done
+            
+            log "ERROR" "无法拉取镜像 $source_image"
+            return 1
           }
           
           # 重试函数
@@ -346,84 +355,43 @@ jobs:
           sync_status="SUCCESS"
           error_message=""
           
-          # 步骤1: 确保仓库存在
-          report_progress "仓库检查" "🏗️" "检查/创建阿里云仓库"
-          if ! ensure_aliyun_repo "$repo_name"; then
+          # 步骤1: 验证源镜像存在
+          report_progress "验证镜像" "🔍" "验证源镜像 $SOURCE_IMAGE 是否存在"
+          if ! smart_pull_image "$SOURCE_IMAGE"; then
             sync_status="FAILED"
-            error_message="仓库创建失败"
+            error_message="源镜像不存在或无法访问"
           fi
           
-          # 步骤2: 拉取源镜像
+          # 步骤2: 使用crane直接复制镜像
           if [[ "$sync_status" == "SUCCESS" ]]; then
-            report_progress "拉取镜像" "⬇️" "从Docker Hub拉取 $SOURCE_IMAGE"
+            report_progress "同步镜像" "🚀" "使用crane复制 $SOURCE_IMAGE -> $TARGET_IMAGE"
             
-            # 匿名镜像拉取功能
-            anonymous_pull_image() {
-              local image="$1"
-              local max_attempts=3
-              local attempt=1
-              
-              log "INFO" "使用匿名方式拉取公开镜像: $image"
-              
-              # 确保没有登录状态，避免认证冲突
-              docker logout > /dev/null 2>&1 || true
-              
-              while [[ $attempt -le $max_attempts ]]; do
-                log "INFO" "匿名拉取尝试 $attempt/$max_attempts"
-                
-                if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
-                  log "INFO" "匿名拉取成功: $image"
-                  return 0
-                else
-                  log "WARN" "匿名拉取失败 (尝试 $attempt/$max_attempts)"
-                  if [[ $attempt -lt $max_attempts ]]; then
-                    local delay=$((attempt * 5))
-                    log "INFO" "等待 ${delay} 秒后重试..."
-                    sleep $delay
-                  fi
-                fi
-                
-                ((attempt++))
-              done
-              
-              log "ERROR" "匿名拉取失败，可能是网络问题或镜像不存在"
-              return 1
-            }
-            
-            if anonymous_pull_image "$SOURCE_IMAGE"; then
-              # 获取镜像信息
-              image_size=$(docker image inspect "$SOURCE_IMAGE" --format '{{.Size}}' | numfmt --to=iec 2>/dev/null || echo "未知")
-              image_id=$(docker image inspect "$SOURCE_IMAGE" --format '{{.Id}}' | cut -d':' -f2 | cut -c1-12 2>/dev/null || echo "未知")
-              log "INFO" "镜像信息 - ID: $image_id, 大小: $image_size"
+            # 方法1: 尝试直接复制
+            log "INFO" "尝试直接复制镜像..."
+            if crane copy "$SOURCE_IMAGE" "$TARGET_IMAGE" 2>&1 | tee copy_log.txt; then
+              log "INFO" "✅ 直接复制成功"
             else
-              sync_status="FAILED"
-              error_message="拉取源镜像失败 - 请检查镜像名称是否正确或网络连接"
+              log "WARN" "直接复制失败，尝试备用方法..."
+              
+              # 方法2: 通过本地缓存方式
+              log "INFO" "使用本地缓存方式..."
+              if crane pull "$SOURCE_IMAGE" /tmp/image.tar; then
+                log "INFO" "镜像已拉取到本地缓存"
+                if crane push /tmp/image.tar "$TARGET_IMAGE"; then
+                  log "INFO" "✅ 通过本地缓存同步成功"
+                  rm -f /tmp/image.tar
+                else
+                  log "ERROR" "本地缓存推送失败"
+                  sync_status="FAILED"
+                  error_message="镜像同步失败"
+                  cat copy_log.txt || true
+                fi
+              else
+                log "ERROR" "无法拉取镜像到本地缓存"
+                sync_status="FAILED"
+                error_message="镜像拉取失败"
+              fi
             fi
-          fi
-          
-          # 步骤3: 打标签
-          if [[ "$sync_status" == "SUCCESS" ]]; then
-            report_progress "打标签" "🏷️" "为镜像打标签 $TARGET_IMAGE"
-            if ! docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"; then
-              sync_status="FAILED"
-              error_message="镜像打标签失败"
-            fi
-          fi
-          
-          # 步骤4: 推送镜像
-          if [[ "$sync_status" == "SUCCESS" ]]; then
-            report_progress "推送镜像" "⬆️" "推送到阿里云 $TARGET_IMAGE"
-            if ! retry_command "$MAX_RETRIES" "$RETRY_DELAY" "推送目标镜像" docker push "$TARGET_IMAGE"; then
-              sync_status="FAILED"
-              error_message="推送目标镜像失败"
-            fi
-          fi
-          
-          # 步骤5: 清理本地镜像
-          if [[ "$sync_status" == "SUCCESS" && "$CLEANUP_ON_SUCCESS" == "true" ]]; then
-            report_progress "清理" "🧹" "清理本地镜像标签"
-            docker rmi "$TARGET_IMAGE" &> /dev/null || true
-            log "INFO" "本地镜像标签已清理"
           fi
           
           # 记录结果

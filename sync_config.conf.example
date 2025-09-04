@@ -1,25 +1,45 @@
 #!/bin/bash
-# Docker镜像同步系统配置文件示例
-# 复制此文件为 sync_config.conf 并根据需要修改配置
+# Docker镜像同步配置文件 (Crane版本)
+# 请复制此文件为 sync_config.conf 并填入实际配置
 
 # =============================================================================
-# 基本配置
+# 阿里云配置 (必需)
 # =============================================================================
 
-# 最大重试次数（推荐: 3-5）
+# 阿里云容器镜像服务配置
+ALIYUN_REGISTRY="registry.cn-hangzhou.aliyuncs.com"
+ALIYUN_USERNAME="your-aliyun-username"
+ALIYUN_PASSWORD="your-aliyun-password"
+ALIYUN_NAMESPACE="your-namespace"
+
+# =============================================================================
+# DockerHub配置 (可选)
+# =============================================================================
+
+# DockerHub认证信息 (可选，用于认证拉取)
+# 如果不配置，将使用匿名方式拉取公开镜像
+# 使用Crane工具时，这些配置是完全可选的
+DOCKERHUB_USERNAME="your-dockerhub-username"
+DOCKERHUB_TOKEN="your-dockerhub-token"
+
+# =============================================================================
+# 脚本配置
+# =============================================================================
+
+# 最大重试次数
 MAX_RETRIES=3
 
-# 重试间隔时间（秒，推荐: 5-10）
-RETRY_DELAY=5
+# 重试间隔（秒）
+RETRY_DELAY=10
 
-# 详细输出模式（true/false）
-VERBOSE=false
+# 日志级别 (DEBUG, INFO, WARN, ERROR)
+LOG_LEVEL="INFO"
 
-# 干运行模式（true/false，用于测试）
+# 干运行模式 (true/false)
 DRY_RUN=false
 
-# 强制执行模式（true/false，跳过某些检查）
-FORCE=false
+# 使用Crane工具时，不再需要本地镜像清理配置
+# 临时文件会自动清理
 
 # =============================================================================
 # 日志配置
