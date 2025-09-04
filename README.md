@@ -45,6 +45,131 @@ sync-docker-image/
 └── 📂 .trae/documents/        # 项目文档
 ```
 
+## 🍴 Fork 使用指南
+
+### 📋 Fork 这个仓库的完整步骤
+
+如果您想使用这个Docker镜像同步系统，最简单的方法是fork这个仓库到您自己的GitHub账户。
+
+#### 1. Fork 仓库
+
+1. **点击Fork按钮**
+   - 访问本仓库页面
+   - 点击右上角的 "Fork" 按钮
+   - 选择您的GitHub账户作为目标
+
+2. **克隆到本地（可选）**
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/sync-docker-image.git
+   cd sync-docker-image
+   ```
+
+#### 2. 配置GitHub Secrets
+
+在您fork的仓库中配置必要的环境变量：
+
+1. **进入仓库设置**
+   - 在您fork的仓库页面，点击 "Settings" 标签
+   - 在左侧菜单中选择 "Secrets and variables" > "Actions"
+
+2. **添加必需的Secrets**
+   
+   点击 "New repository secret" 按钮，逐一添加以下变量：
+
+   **阿里云配置（必需）：**
+   ```
+   ALIYUN_REGION              # 如：cn-hangzhou
+   ALIYUN_ACCESS_KEY_ID       # 阿里云AccessKey ID
+   ALIYUN_ACCESS_KEY_SECRET   # 阿里云AccessKey Secret
+   ALIYUN_REGISTRY           # 如：registry.cn-hangzhou.aliyuncs.com
+   ALIYUN_USERNAME           # 阿里云容器镜像服务用户名
+   ALIYUN_PASSWORD           # 阿里云容器镜像服务密码
+   ALIYUN_NAMESPACE          # 您的命名空间名称
+   ```
+
+   **DockerHub配置（可选，推荐）：**
+   ```
+   DOCKERHUB_USERNAME        # DockerHub用户名
+   DOCKERHUB_TOKEN          # DockerHub访问令牌
+   ```
+
+#### 3. 获取阿里云凭证
+
+1. **获取AccessKey**
+   - 登录阿里云控制台
+   - 访问 "AccessKey管理" 页面
+   - 创建AccessKey，记录AccessKey ID和Secret
+
+2. **设置容器镜像服务**
+   - 访问阿里云 "容器镜像服务" 控制台
+   - 创建命名空间（如果没有）
+   - 记录Registry地址和登录凭证
+
+3. **获取DockerHub Token（可选）**
+   - 登录DockerHub网站
+   - 进入 Account Settings > Security
+   - 创建新的Access Token
+   - 复制生成的Token（以dckr_pat_开头）
+
+#### 4. 开始使用
+
+配置完成后，您可以通过以下方式使用系统：
+
+**方式一：编辑镜像列表文件**
+```bash
+# 在您fork的仓库中编辑 upload/images.md 文件
+echo "nginx:latest" >> upload/images.md
+echo "redis:alpine" >> upload/images.md
+
+# 提交更改
+git add upload/images.md
+git commit -m "添加要同步的镜像"
+git push
+```
+
+**方式二：手动触发GitHub Actions**
+1. 在您的仓库中，点击 "Actions" 标签
+2. 选择 "Enhanced Docker Image Sync" 工作流
+3. 点击 "Run workflow" 按钮
+4. 在输入框中填入镜像名称（每行一个）
+5. 点击 "Run workflow" 执行
+
+**方式三：使用JSON配置**
+```bash
+# 编辑 upload/batch_sync.json 文件，添加您的镜像配置
+# 提交更改即可触发自动同步
+```
+
+#### 5. 监控同步进度
+
+- **GitHub Actions页面**：查看实时同步日志
+- **同步历史**：查看 `transfer_history.md` 文件
+- **镜像映射**：查看 `image_list.md` 文件
+- **阿里云控制台**：验证镜像是否成功推送
+
+#### 6. 常见问题解答
+
+**Q: 为什么我的同步失败了？**
+A: 请检查：
+- GitHub Secrets是否正确配置
+- 阿里云AccessKey是否有足够权限
+- 镜像名称格式是否正确
+- 查看Actions日志获取详细错误信息
+
+**Q: 可以同步私有镜像吗？**
+A: 可以，但需要配置DockerHub凭证（DOCKERHUB_USERNAME和DOCKERHUB_TOKEN）
+
+**Q: 同步后的镜像地址是什么？**
+A: 格式为：`registry.cn-hangzhou.aliyuncs.com/your-namespace/image-name:tag`
+
+**Q: 如何批量添加多个镜像？**
+A: 编辑 `upload/images.md` 文件，每行添加一个镜像名称，然后提交到GitHub
+
+**Q: 系统支持哪些镜像仓库？**
+A: 目前支持从DockerHub同步到阿里云容器镜像服务
+
+---
+
 ## 🚀 快速开始
 
 ### 1. 环境准备
