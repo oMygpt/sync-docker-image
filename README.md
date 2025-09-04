@@ -60,8 +60,9 @@ sync-docker-image/
 #### GitHub Secrets配置
 在GitHub仓库的Settings > Secrets中添加以下环境变量：
 
+##### 必需配置（阿里云）
 ```bash
-# 阿里云配置
+# 阿里云配置 - 必需
 ALIYUN_REGION=cn-hangzhou
 ALIYUN_ACCESS_KEY_ID=your_access_key_id
 ALIYUN_ACCESS_KEY_SECRET=your_access_key_secret
@@ -69,11 +70,19 @@ ALIYUN_REGISTRY=registry.cn-hangzhou.aliyuncs.com
 ALIYUN_USERNAME=your_aliyun_username
 ALIYUN_PASSWORD=your_aliyun_password
 ALIYUN_NAMESPACE=your_namespace
+```
 
-# DockerHub配置
+##### 可选配置（DockerHub）
+```bash
+# DockerHub配置 - 可选（用于私有镜像或提高拉取限制）
 DOCKERHUB_USERNAME=your_dockerhub_username
 DOCKERHUB_TOKEN=your_dockerhub_token
 ```
+
+> **注意**: DockerHub凭证是可选的。如果不配置，系统将以匿名方式拉取公开镜像。配置DockerHub凭证的好处：
+> - 避免匿名用户的拉取限制
+> - 可以拉取私有镜像
+> - 提高拉取稳定性
 
 #### 本地配置
 复制并编辑配置文件：
