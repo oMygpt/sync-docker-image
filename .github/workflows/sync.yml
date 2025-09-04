@@ -1,0 +1,72 @@
+name: Image Sync Action
+
+on:
+  push:
+    paths:
+      - 'upload/images.md'
+      - 'upload/batch_sync.json'
+  workflow_dispatch:
+    inputs:
+      images:
+        description: '镜像列表 (每行一个)'
+        required: false
+        type: string
+      dry_run:
+        description: '干运行模式'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  NAMESPACE: dslab
+  REPOSITORY: vllm
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Image Sync Action
+        uses: hhyasdf/image-sync-action@v1
+        with:
+          # 阿里云容器镜像服务配置
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          namespace: ${{ env.NAMESPACE }}
+          repository: ${{ env.REPOSITORY }}
+          # 镜像列表来源
+          images_file: 'upload/images.md'
+          # 可选配置
+          dry_run: ${{ github.event.inputs.dry_run || false }}
+          max_parallel: 3
+          retry_times: 3
+          retry_delay: 10
+        env:
+          # 可选的DockerHub认证（避免拉取限制）
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Update sync history
+        if: success()
+        run: |
+          echo "## $(date '+%Y-%m-%d %H:%M:%S')" >> transfer_history.md
+          echo "- **触发方式**: ${{ github.event_name }}" >> transfer_history.md
+          echo "- **运行ID**: ${{ github.run_id }}" >> transfer_history.md
+          echo "- **状态**: 成功" >> transfer_history.md
+          echo "" >> transfer_history.md
+
+      - name: Commit changes
+        if: success()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add transfer_history.md || true
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "📝 更新同步历史记录 ($(date '+%Y-%m-%d %H:%M:%S'))"
+            git push
+          fi
