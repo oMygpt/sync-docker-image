@@ -1,150 +1,336 @@
-name: Process and Push Docker Images
+name: Docker镜像同步到阿里云 (Crane版本)
 
 on:
   push:
     paths:
       - 'upload/images.md'
 
+env:
+  MAX_RETRIES: 3
+  RETRY_DELAY: 10
+  LOG_LEVEL: INFO
+
 jobs:
-  process-images:
+  # 预检查作业
+  pre-check:
     runs-on: ubuntu-latest
+    outputs:
+      images-count: ${{ steps.parse.outputs.images-count }}
+      config-valid: ${{ steps.validate.outputs.config-valid }}
+      images-matrix: ${{ steps.parse.outputs.images-matrix }}
+    
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 安装阿里云CLI工具
-      - name: Install Aliyun CLI
+      - name: Validate configuration
+        id: validate
         run: |
-          curl -sSL https://github.com/aliyun/aliyun-cli/releases/download/v3.0.188/aliyun-cli-linux-3.0.188-amd64.tgz | tar -xz
-          sudo mv aliyun /usr/local/bin/
-          aliyun --version
-
-      # 配置阿里云认证信息
-      - name: Configure Aliyun CLI
-        run: |
-          aliyun configure set \
-            --mode AK \
-            --region ${{ secrets.ALIYUN_REGION }} \
-            --access-key-id ${{ secrets.ALIYUN_ACCESS_KEY_ID }} \
-            --access-key-secret ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
-
-      # 统一的 Docker 登录步骤
-      - name: Docker Registry Authentication
-        run: |
-          # 登录到 DockerHub
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "🔍 验证配置..."
           
-          # 验证 DockerHub 登录状态
-          if ! docker info | grep -q "Username: ${{ secrets.DOCKERHUB_USERNAME }}"; then
-            echo "DockerHub authentication failed"
+          # 检查必需的secrets (阿里云)
+          required_secrets=(
+            "ALIYUN_USERNAME"
+            "ALIYUN_PASSWORD"
+          )
+          
+          missing_secrets=()
+          for secret in "${required_secrets[@]}"; do
+            if [[ -z "${!secret:-}" ]]; then
+              missing_secrets+=("$secret")
+            fi
+          done
+          
+          if [[ ${#missing_secrets[@]} -gt 0 ]]; then
+            echo "❌ 缺少必需的阿里云secrets: ${missing_secrets[*]}"
+            echo "请确保配置以下secrets:"
+            echo "  - ALIYUN_USERNAME: swufelab"
+            echo "  - ALIYUN_PASSWORD: 您的阿里云Container Registry密码"
+            echo "config-valid=false" >> $GITHUB_OUTPUT
             exit 1
           fi
           
-          # 登录到阿里云容器服务
-          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login "${{ secrets.ALIYUN_REGISTRY }}" -u "${{ secrets.ALIYUN_USERNAME }}" --password-stdin
+          echo "✅ 配置验证通过"
+          echo "config-valid=true" >> $GITHUB_OUTPUT
+        env:
+          ALIYUN_USERNAME: ${{ secrets.ALIYUN_USERNAME }}
+          ALIYUN_PASSWORD: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: Process images and create mapping
+      - name: Parse image list
+        id: parse
         run: |
-          mkdir -p temp done
+          echo "📋 解析镜像列表..."
           
-          # 初始化映射文件
-          if [ ! -f "image_list.md" ]; then
-            echo "# Docker Image Mapping" > image_list.md
-            echo "| DockerHub Image | Aliyun Mirror |" >> image_list.md
-            echo "|-----------------|---------------|" >> image_list.md
+          images_file="upload/images.md"
+          images_array=()
+          
+          # 处理标准镜像列表文件
+          if [[ -f "$images_file" ]]; then
+            echo "处理镜像列表文件: $images_file"
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              line=$(echo "$line" | tr -d '\r' | xargs)
+              [[ -n "$line" && "${line:0:1}" != "#" ]] && images_array+=("$line")
+            done < "$images_file"
           fi
           
-          # 创建临时映射文件
-          cp image_list.md temp/new_mapping.md
+          # 去重并验证
+          declare -A unique_images
+          valid_images=()
           
-          # 处理镜像的函数
-          process_docker_image() {
-            local image="$1"
-            local namespace="${{ secrets.ALIYUN_NAMESPACE }}"
-            local max_retries=3
-            local retry_count=0
-            
-            # 解析镜像名称和标签
-            local image_name=$(echo $image | cut -d':' -f1)
-            local image_tag=$(echo $image | grep ':' > /dev/null && echo $image | cut -d':' -f2 || echo "latest")
-            local repo_name=$(echo $image_name | rev | cut -d'/' -f1 | rev)
-            
-            # 构造阿里云镜像完整路径
-            local aliyun_image="${{ secrets.ALIYUN_REGISTRY }}/${namespace}/${repo_name}:${image_tag}"
-            
-            echo "Processing image: $image -> $aliyun_image"
-            
-            # 确保阿里云仓库存在
-            ensure_aliyun_repo() {
-              local repo_name="$1"
-              
-              # 检查仓库是否存在
-              if ! aliyun cr GetRepository \
-                --RepoName=${repo_name} \
-                --RepoNamespace=${namespace} > /dev/null 2>&1; then
-                
-                echo "Creating repository ${repo_name} in namespace ${namespace}"
-                aliyun cr CreateRepository \
-                  --RepoName=${repo_name} \
-                  --RepoNamespace=${namespace} \
-                  --RepoType=PUBLIC \
-                  --Summary="Mirror of ${image_name}"
-              fi
-            }
-            
-            # 确保仓库存在
-            ensure_aliyun_repo "$repo_name"
-            
-            while [ $retry_count -lt $max_retries ]; do
-              echo "Attempt $((retry_count + 1)) of $max_retries"
-              
-              if docker pull "$image"; then
-                echo "Successfully pulled $image"
-                
-                if docker tag "$image" "$aliyun_image" && \
-                   docker push "$aliyun_image"; then
-                   
-                  # 添加到映射文件
-                  echo "| \`$image\` | \`$aliyun_image\` |" >> temp/new_mapping.md
-                  
-                  # 标记为已处理
-                  touch "done/${image// /_}.txt"
-                  echo "Successfully processed $image"
-                  return 0
-                fi
+          for image in "${images_array[@]}"; do
+            # 基本格式验证
+            if [[ "$image" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)*(:([a-zA-Z0-9._-]+))?$ ]]; then
+              # 添加默认标签
+              if [[ ! "$image" =~ ":" ]]; then
+                image="${image}:latest"
               fi
               
-              retry_count=$((retry_count + 1))
-              [ $retry_count -lt $max_retries ] && sleep 5
-            done
-            
-            echo "Failed to process $image after $max_retries attempts"
-            return 1
+              # 去重
+              if [[ -z "${unique_images[$image]:-}" ]]; then
+                unique_images["$image"]=1
+                valid_images+=("$image")
+              fi
+            else
+              echo "⚠️ 跳过无效镜像格式: $image"
+            fi
+          done
+          
+          images_count=${#valid_images[@]}
+          echo "📊 找到 $images_count 个有效镜像"
+          
+          if [[ $images_count -eq 0 ]]; then
+            echo "❌ 没有找到有效的镜像进行同步"
+            exit 1
+          fi
+          
+          # 创建矩阵
+          matrix_json=$(printf '%s\n' "${valid_images[@]}" | jq -R . | jq -s .)
+          
+          echo "images-count=$images_count" >> $GITHUB_OUTPUT
+          echo "images-matrix=$matrix_json" >> $GITHUB_OUTPUT
+          
+          # 显示将要处理的镜像
+          echo "📋 将要同步的镜像:"
+          printf '  - %s\n' "${valid_images[@]}"
+
+  # 主同步作业
+  sync-images:
+    needs: pre-check
+    if: needs.pre-check.outputs.config-valid == 'true' && needs.pre-check.outputs.images-count > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        image: ${{ fromJson(needs.pre-check.outputs.images-matrix) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.1
+        
+      - name: Install dependencies
+        run: |
+          echo "🔧 安装依赖工具..."
+          
+          # 安装jq（用于JSON处理）
+          sudo apt-get update && sudo apt-get install -y jq
+          
+          # 创建必要的目录
+          mkdir -p temp done logs
+          
+          # 验证crane安装
+          crane version
+
+      - name: Configure authentication
+        run: |
+          echo "🔐 配置认证信息..."
+          
+          # 登录阿里云容器服务 (杭州区域)
+          echo "Logging in to Aliyun Container Registry (Hangzhou)..."
+          if ! crane auth login -u "${{ secrets.ALIYUN_USERNAME }}" -p "${{ secrets.ALIYUN_PASSWORD }}" registry.cn-hangzhou.aliyuncs.com; then
+            echo "❌ 阿里云认证失败"
+            echo "请检查 ALIYUN_USERNAME 和 ALIYUN_PASSWORD secrets"
+            echo "用户名应为: swufelab"
+            echo "仓库地址: registry.cn-hangzhou.aliyuncs.com"
+            exit 1
+          fi
+          echo "✅ 阿里云认证成功 (registry.cn-hangzhou.aliyuncs.com)"
+
+      - name: Process single image
+        id: sync
+        run: |
+          set -euo pipefail
+          
+          # 设置变量
+          SOURCE_IMAGE="${{ matrix.image }}"
+          NAMESPACE="dslab"  # 固定命名空间
+          REGISTRY="registry.cn-hangzhou.aliyuncs.com"  # 固定杭州区域
+          
+          # 日志文件
+          LOG_FILE="logs/sync_${SOURCE_IMAGE//[\/:]/_}_$(date +%Y%m%d_%H%M%S).log"
+          
+          # 日志函数
+          log() {
+            local level="$1"
+            local message="$2"
+            local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+            echo "[$level] $timestamp - $message" | tee -a "$LOG_FILE"
           }
           
-          # 处理镜像列表
-          while IFS= read -r line || [[ -n "$line" ]]; do
-            image=$(echo "$line" | tr -d '\r' | xargs)
-            [[ -z "$image" || "${image:0:1}" == "#" ]] && continue
+          # 进度报告函数
+          report_progress() {
+            local step="$1"
+            local status="$2"
+            local message="$3"
+            echo "::group::📊 [$step] $status"
+            echo "$message"
+            echo "::endgroup::"
+          }
+          
+          log "INFO" "开始处理镜像: $SOURCE_IMAGE"
+          report_progress "开始" "🚀" "开始同步镜像 $SOURCE_IMAGE"
+          
+          # 解析镜像信息
+          image_name=$(echo "$SOURCE_IMAGE" | cut -d':' -f1)
+          image_tag=$(echo "$SOURCE_IMAGE" | grep ':' > /dev/null && echo "$SOURCE_IMAGE" | cut -d':' -f2 || echo "latest")
+          repo_name=$(echo "$image_name" | rev | cut -d'/' -f1 | rev)
+          
+          # 构造目标镜像路径 - 使用vllm作为仓库名
+          TARGET_IMAGE="${REGISTRY}/${NAMESPACE}/vllm:${repo_name}-${image_tag}"
+          
+          log "INFO" "源镜像: $SOURCE_IMAGE"
+          log "INFO" "目标镜像: $TARGET_IMAGE"
+          
+          # 检查是否已处理
+          done_marker="done/${SOURCE_IMAGE//[\/:]/_}.txt"
+          if [[ -f "$done_marker" ]]; then
+            log "INFO" "镜像已处理，跳过: $SOURCE_IMAGE"
+            report_progress "跳过" "⏭️" "镜像 $SOURCE_IMAGE 已处理，跳过同步"
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "message=镜像已处理" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 执行同步步骤
+          sync_status="SUCCESS"
+          error_message=""
+          
+          # 步骤1: 验证源镜像存在
+          report_progress "验证镜像" "🔍" "验证源镜像 $SOURCE_IMAGE 是否存在"
+          if ! crane ls "$(echo $SOURCE_IMAGE | cut -d':' -f1)" | grep -q "$(echo $SOURCE_IMAGE | cut -d':' -f2)"; then
+            sync_status="FAILED"
+            error_message="源镜像不存在或无法访问"
+          fi
+          
+          # 步骤2: 使用crane直接复制镜像
+          if [[ "$sync_status" == "SUCCESS" ]]; then
+            report_progress "同步镜像" "🚀" "使用crane复制 $SOURCE_IMAGE -> $TARGET_IMAGE"
             
-            if [ ! -f "done/${image// /_}.txt" ]; then
-              process_docker_image "$image"
+            log "INFO" "开始复制镜像..."
+            if crane copy "$SOURCE_IMAGE" "$TARGET_IMAGE" 2>&1 | tee copy_log.txt; then
+              log "INFO" "✅ 镜像复制成功"
+            else
+              log "ERROR" "镜像复制失败"
+              sync_status="FAILED"
+              error_message="镜像同步失败"
+              cat copy_log.txt || true
             fi
-          done < upload/images.md
+          fi
           
-          # 对映射表进行排序（保留头部3行）
-          (head -n 3 temp/new_mapping.md; tail -n +4 temp/new_mapping.md | sort -u) > image_list.md
-          
-          echo "Final mapping file content:"
-          cat image_list.md
+          # 记录结果
+          if [[ "$sync_status" == "SUCCESS" ]]; then
+            touch "$done_marker"
+            log "INFO" "镜像同步成功: $SOURCE_IMAGE -> $TARGET_IMAGE"
+            report_progress "完成" "✅" "镜像 $SOURCE_IMAGE 同步成功"
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=同步成功" >> $GITHUB_OUTPUT
+            echo "target_image=$TARGET_IMAGE" >> $GITHUB_OUTPUT
+            
+            # 更新映射文件
+            if [[ ! -f "image_list.md" ]]; then
+              echo "# Docker Image Mapping" > image_list.md
+              echo "| DockerHub Image | Aliyun Mirror | 同步时间 |" >> image_list.md
+              echo "|-----------------|---------------|----------|" >> image_list.md
+            fi
+            
+            # 添加到映射文件
+            echo "| \`$SOURCE_IMAGE\` | \`$TARGET_IMAGE\` | $(date '+%Y-%m-%d %H:%M:%S') |" >> image_list.md
+          else
+            log "ERROR" "镜像同步失败: $SOURCE_IMAGE - $error_message"
+            report_progress "失败" "❌" "镜像 $SOURCE_IMAGE 同步失败: $error_message"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "message=$error_message" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-logs-${{ matrix.image }}
+          path: logs/
+          retention-days: 7
+
+  # 后处理作业
+  post-process:
+    needs: [pre-check, sync-images]
+    if: always() && needs.pre-check.outputs.config-valid == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add done/ image_list.md
-          git commit -m "Update image mappings and processed markers" || echo "No changes to commit"
-          git push || echo "No changes to push"
+          
+          # 添加变更
+          git add done/ image_list.md || true
+          
+          # 提交变更
+          if git diff --staged --quiet; then
+            echo "📝 没有变更需要提交"
+          else
+            git commit -m "🤖 自动更新: 镜像同步结果 ($(date '+%Y-%m-%d %H:%M:%S'))"
+            git push
+            echo "✅ 变更已提交并推送"
+          fi
+
+      - name: Create summary
+        run: |
+          echo "📋 创建工作流摘要..."
+          
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 🐳 Docker镜像同步完成
+          
+          ## 📊 统计信息
+          - **处理镜像数量**: ${{ needs.pre-check.outputs.images-count }}
+          - **同步时间**: $(date '+%Y-%m-%d %H:%M:%S')
+          - **目标仓库**: registry.cn-hangzhou.aliyuncs.com/dslab/vllm
+          
+          ## 🔗 相关链接
+          - [查看详细日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          - [镜像映射表](./image_list.md)
+          
+          ## 📝 使用说明
+          
+          ### 拉取同步后的镜像
+          \`\`\`bash
+          # 登录阿里云容器服务
+          docker login --username=swufelab registry.cn-hangzhou.aliyuncs.com
+          
+          # 拉取镜像（示例）
+          docker pull registry.cn-hangzhou.aliyuncs.com/dslab/vllm:nginx-latest
+          \`\`\`
+          
+          ---
+          *此报告由 GitHub Actions 自动生成*
+          EOF
+          
+          echo "✅ 工作流摘要已创建"

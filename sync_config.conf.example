@@ -7,10 +7,11 @@
 # =============================================================================
 
 # 阿里云容器镜像服务配置
-ALIYUN_REGISTRY="registry.cn-hangzhou.aliyuncs.com"
-ALIYUN_USERNAME="your-aliyun-username"
-ALIYUN_PASSWORD="your-aliyun-password"
-ALIYUN_NAMESPACE="your-namespace"
+# 注意: 使用Crane工具后，仓库地址和命名空间已固化
+ALIYUN_REGISTRY="registry.cn-hangzhou.aliyuncs.com"  # 固定杭州区域
+ALIYUN_USERNAME="swufelab"                          # 固定用户名
+ALIYUN_PASSWORD="your-aliyun-password"              # 请填入您的实际密码
+ALIYUN_NAMESPACE="dslab"                            # 固定命名空间
 
 # =============================================================================
 # DockerHub配置 (可选)

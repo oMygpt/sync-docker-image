@@ -55,7 +55,8 @@
 - DockerHub认证失败会导致整个流程失败
 
 **现在**:
-- 只需要4个必需的阿里云secrets
+- 只需要2个必需的阿里云secrets (用户名和密码)
+- 仓库地址和命名空间已固化为实际配置
 - DockerHub认证完全可选
 - 公开镜像支持匿名拉取
 
@@ -102,11 +103,14 @@ Docker Hub → crane copy → 阿里云
 
 1. **必需的Secrets**:
    ```
-   ALIYUN_REGISTRY
-   ALIYUN_USERNAME
-   ALIYUN_PASSWORD
-   ALIYUN_NAMESPACE
+   ALIYUN_USERNAME=swufelab              # 固定用户名
+   ALIYUN_PASSWORD=your_password         # 您的阿里云密码
    ```
+   
+   **固化配置说明**:
+   - 仓库地址: `registry.cn-hangzhou.aliyuncs.com` (杭州区域)
+   - 命名空间: `dslab`
+   - 用户名: `swufelab`
 
 2. **可选的Secrets**:
    ```

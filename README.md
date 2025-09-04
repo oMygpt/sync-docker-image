@@ -116,11 +116,13 @@ sync-docker-image/
 
    **阿里云配置（必需）：**
    ```
-   ALIYUN_REGISTRY           # 如：registry.cn-hangzhou.aliyuncs.com
-   ALIYUN_USERNAME           # 阿里云容器镜像服务用户名
+   ALIYUN_USERNAME           # 阿里云容器镜像服务用户名 (示例: swufelab)
    ALIYUN_PASSWORD           # 阿里云容器镜像服务密码
-   ALIYUN_NAMESPACE          # 您的命名空间名称
    ```
+   
+   > **注意**: 使用Crane工具后，仓库地址和命名空间已固化为:
+   > - 仓库地址: `registry.cn-hangzhou.aliyuncs.com`
+   > - 命名空间: `dslab`
 
    > **注意**: 使用Crane工具后，不再需要阿里云CLI相关的ACCESS_KEY配置。
 
@@ -197,7 +199,8 @@ A: 请检查：
 A: 可以，但需要配置DockerHub凭证（DOCKERHUB_USERNAME和DOCKERHUB_TOKEN）
 
 **Q: 同步后的镜像地址是什么？**
-A: 格式为：`registry.cn-hangzhou.aliyuncs.com/your-namespace/image-name:tag`
+A: 格式为：`registry.cn-hangzhou.aliyuncs.com/dslab/image-name:tag`
+   例如：`registry.cn-hangzhou.aliyuncs.com/dslab/vllm:latest`
 
 **Q: 如何批量添加多个镜像？**
 A: 编辑 `upload/images.md` 文件，每行添加一个镜像名称，然后提交到GitHub
@@ -236,11 +239,14 @@ sudo mv /tmp/crane /usr/local/bin/
 ##### 必需配置（阿里云）
 ```bash
 # 阿里云配置 - 必需
-ALIYUN_REGISTRY=registry.cn-hangzhou.aliyuncs.com
-ALIYUN_USERNAME=your_aliyun_username
-ALIYUN_PASSWORD=your_aliyun_password
-ALIYUN_NAMESPACE=your_namespace
+ALIYUN_USERNAME=swufelab              # 固定用户名
+ALIYUN_PASSWORD=your_aliyun_password  # 您的阿里云密码
 ```
+
+**固化配置说明：**
+- 仓库地址: `registry.cn-hangzhou.aliyuncs.com` (杭州区域)
+- 命名空间: `dslab`
+- 用户名: `swufelab`
 
 > **注意**: 使用Crane工具后，不再需要阿里云CLI相关的ACCESS_KEY配置。
 
@@ -268,13 +274,13 @@ cp sync_config.conf.example sync_config.conf
 #### 手动同步单个镜像
 ```bash
 # 使用增强版脚本
-./transfer_enhanced.sh -s nginx:latest -d registry.cn-hangzhou.aliyuncs.com/namespace/nginx:latest
+./transfer_enhanced.sh -s nginx:latest -d registry.cn-hangzhou.aliyuncs.com/dslab/nginx:latest
 
 # 详细输出模式
-./transfer_enhanced.sh -s redis:alpine -d registry.cn-hangzhou.aliyuncs.com/namespace/redis:alpine -v
+./transfer_enhanced.sh -s redis:alpine -d registry.cn-hangzhou.aliyuncs.com/dslab/redis:alpine -v
 
 # 干运行模式（预览操作）
-./transfer_enhanced.sh -s ubuntu:20.04 -d registry.cn-hangzhou.aliyuncs.com/namespace/ubuntu:20.04 --dry-run
+./transfer_enhanced.sh -s ubuntu:20.04 -d registry.cn-hangzhou.aliyuncs.com/dslab/ubuntu:20.04 --dry-run
 ```
 
 #### 批量同步
@@ -318,12 +324,12 @@ cp sync_config.conf.example sync_config.conf
 # 基本同步
 ./transfer_enhanced.sh \
   -s nginx:latest \
-  -d registry.cn-hangzhou.aliyuncs.com/my-namespace/nginx:latest
+  -d registry.cn-hangzhou.aliyuncs.com/dslab/nginx:latest
 
 # 高级配置
 ./transfer_enhanced.sh \
   -s redis:6.2-alpine \
-  -d registry.cn-hangzhou.aliyuncs.com/my-namespace/redis:6.2-alpine \
+  -d registry.cn-hangzhou.aliyuncs.com/dslab/redis:6.2-alpine \
   -r 5 \
   -w 10 \
   -v \
@@ -332,7 +338,7 @@ cp sync_config.conf.example sync_config.conf
 # 干运行测试
 ./transfer_enhanced.sh \
   -s mysql:8.0 \
-  -d registry.cn-hangzhou.aliyuncs.com/my-namespace/mysql:8.0 \
+  -d registry.cn-hangzhou.aliyuncs.com/dslab/mysql:8.0 \
   --dry-run
 ```
 
